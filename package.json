@@ -1,0 +1,21 @@
+{
+  "name": "pi-session-lens",
+  "version": "0.2.0",
+  "description": "TUI 可视化分析 pi-agent 历史会话：两层循环（SessionLoop / AgentLoop）逐步回溯，快速定位问题",
+  "type": "module",
+  "bin": {
+    "pi-lens": "./bin/pi-lens.ts"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "start": "node bin/pi-lens.ts",
+    "list": "node bin/pi-lens.ts --list",
+    "test": "node --test tests/core.test.ts tests/layout.test.ts tests/theme.test.ts tests/flow.test.ts",
+    "verify": "bash scripts/verify.sh",
+    "verify:full": "bash scripts/verify.sh --full"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

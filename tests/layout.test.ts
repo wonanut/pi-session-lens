@@ -17,6 +17,11 @@ import { buildTimelineRows, initialState, applyFilter } from "../src/ui/state.ts
 import { renderList } from "../src/ui/view-list.ts";
 import { renderTimeline } from "../src/ui/view-timeline.ts";
 import { renderIssues } from "../src/ui/view-issues.ts";
+import {
+  findCompactionSteps,
+  newCompareState,
+  renderCompactionCompare,
+} from "../src/ui/view-compaction.ts";
 import { visibleWidth } from "../src/ui/text.ts";
 import { analyzeSessionFile } from "../src/core/analyze.ts";
 import { summarizeAll } from "../src/core/summaries.ts";
@@ -131,5 +136,28 @@ test("时间轴：每个 step 都能在详情里渲染且不超宽", { skip: !sa
     st.detailOffset = 0;
     const lines = renderTimeline(st);
     assertRect(lines, 120, 30, `detail step@${idx}`);
+  }
+});
+
+test("压缩对比视图：多尺寸 × 三种视角每行宽度精确", { skip: !sample }, async () => {
+  const st = initialState();
+  st.analysis = await analyzeSessionFile(sample!);
+  const items = findCompactionSteps(st);
+  if (items.length === 0) return; // 样本无压缩则跳过
+
+  for (const [w, h] of [
+    [80, 24],
+    [100, 30],
+    [120, 24],
+    [160, 40],
+  ] as const) {
+    for (const mode of ["summary", "swallowed", "missing"] as const) {
+      st.width = w;
+      st.height = h;
+      const cmp = newCompareState();
+      cmp.mode = mode;
+      const lines = renderCompactionCompare(st, cmp, items[0]!.step.compaction!, "test");
+      assertRect(lines, w, h, `compaction ${mode} ${w}x${h}`);
+    }
   }
 });

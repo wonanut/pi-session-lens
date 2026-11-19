@@ -60,7 +60,7 @@ export function renderHelp(state: AppState): string[] {
   );
   blank();
 
-  h("三种视图");
+  h("四种视图");
   body.push(
     "  " + theme.accent("会话列表") +
       theme.faint("   按健康分排序，一眼看出哪个会话最该看"),
@@ -72,6 +72,10 @@ export function renderHelp(state: AppState): string[] {
   body.push(
     "  " + theme.accent("问题面板") +
       theme.faint("   自动检出错误/压缩/发散/截断，回车跳到现场"),
+  );
+  body.push(
+    "  " + theme.compaction("压缩对比") +
+      theme.faint("   摘要 ⟷ 被压缩原文 ⟷ 漏词核对（按 c 进入）"),
   );
   blank();
 

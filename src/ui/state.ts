@@ -7,7 +7,7 @@
 import type { SessionAnalysis } from "../core/model.ts";
 import type { SessionSummary } from "../core/summaries.ts";
 
-export type View = "list" | "timeline" | "issue" | "help";
+export type View = "list" | "timeline" | "issue" | "help" | "compaction";
 
 export interface AppState {
   view: View;
@@ -46,6 +46,11 @@ export interface AppState {
   /** 问题面板光标。 */
   issueCursor: number;
   issueOffset: number;
+
+  /** 压缩对比视图状态（懒创建）。 */
+  compare: import("./view-compaction.ts").CompareState | null;
+  /** 当前查看第几次压缩（对应 findCompactionSteps 的下标）。 */
+  compareIndex: number;
 
   /** 布局过滤：只看有问题的会话。 */
   onlyProblems: boolean;
@@ -88,6 +93,8 @@ export function initialState(): AppState {
     detailOffset: 0,
     issueCursor: 0,
     issueOffset: 0,
+    compare: null,
+    compareIndex: 0,
     onlyProblems: false,
     flash: null,
     flashAt: 0,

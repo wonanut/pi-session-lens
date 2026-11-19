@@ -225,7 +225,9 @@ SCENARIOS = [
     },
     {
         "name": "时间轴 → Tab 问题面板 → Enter 跳回现场",
-        "steps": [("\r", 1.6, "open"), ("\t", 0.6, "issues"), ("\r", 0.6, "jumped")],
+        "session": "issues",
+        # 单文件启动直接落在时间轴，不需要先 Enter 打开
+        "steps": [("\t", 0.8, "issues"), ("\r", 0.8, "jumped")],
         "expect": ["SessionLoop ▸ AgentLoop"],
     },
     {
@@ -255,18 +257,60 @@ SCENARIOS = [
     },
     {
         "name": "问题面板 → n 跳到问题现场",
-        "steps": [("\r", 1.6, "open"), ("n", 0.6, "next-issue")],
+        "session": "issues",
+        "steps": [("n", 0.8, "next-issue")],
         "expect": ["SessionLoop ▸ AgentLoop"],
+    },
+    {
+        "name": "时间轴 → c 进入压缩对比视图",
+        "session": "compaction",
+        "steps": [("c", 1.0, "compare")],
+        "expect": ["被压缩的原文", "摘要（压缩输出）", "压缩比"],
+    },
+    {
+        "name": "压缩视图 → Tab 切到漏词核对",
+        "session": "compaction",
+        "steps": [("c", 1.0, "compare"), ("\t", 0.4, "t1"), ("\t", 0.8, "t2")],
+        "expect": ["原文有、摘要没有"],
+    },
+    {
+        "name": "无压缩会话按 c 给出提示",
+        "session": "plain",
+        "steps": [("c", 0.8, "c")],
+        "expect": ["没有发生上下文压缩"],
     },
 ]
 
 
+def pick_session(kind):
+    """按场景需要挑一个目标：有压缩 / 无压缩 / 有工具报错的会话。"""
+    import glob
+
+    files = sorted(glob.glob(os.path.join(TARGET, "*.jsonl"))) if os.path.isdir(TARGET) else [TARGET]
+    for p in files:
+        try:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                txt = fh.read()
+        except OSError:
+            continue
+        has_comp = '"type":"compaction"' in txt
+        has_err = '"isError":true' in txt
+        if kind == "compaction" and has_comp:
+            return p
+        if kind == "plain" and not has_comp:
+            return p
+        if kind == "issues" and has_err:
+            return p
+    return TARGET
+
+
 def run_scenario(sc):
-    sess = PtySession([sys.executable and "node", ENTRY, TARGET])
+    target = pick_session(sc.get("session", "any")) if sc.get("session") else TARGET
+    sess = PtySession(["node", ENTRY, target])
     ok = True
     msgs = []
     try:
-        sess.pump(2.0)
+        sess.pump(2.2)
         for keys, wait, _label in sc["steps"]:
             sess.send(keys)
             sess.pump(wait)

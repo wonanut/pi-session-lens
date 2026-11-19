@@ -17,6 +17,7 @@ import {
   toolCalls,
   toolResultJson,
 } from "./parser.ts";
+import { buildCompactionDetails } from "./compaction.ts";
 import type { Turn, Step } from "./model.ts";
 import type {
   AssistantMessage,
@@ -141,6 +142,9 @@ export function buildTurns({ entries, sessionStart }: TurnBuildInput): Turn[] {
   const pending = new Map<string, { turn: Turn; step: Step }>();
   let turnIdx = 0;
 
+  // 压缩详情：一次性算出所有 compaction 吞掉的范围（避免每处重复推导）
+  const compactionDetails = buildCompactionDetails(entries);
+
   const newTurn = (at: number, iso: string): Turn => {
     const t: Turn = {
       index: turnIdx++,
@@ -177,6 +181,7 @@ export function buildTurns({ entries, sessionStart }: TurnBuildInput): Turn[] {
         offsetMs: at ? at - sessionStart : 0,
         text: c.summary,
         approxTokens: estimateTokens(c.summary),
+        compaction: compactionDetails.get(entryId),
       };
       pushStep(turn, step);
       turn.endAt = iso;

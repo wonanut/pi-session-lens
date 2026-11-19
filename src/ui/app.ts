@@ -22,6 +22,11 @@ import { renderList } from "./view-list.ts";
 import { renderTimeline } from "./view-timeline.ts";
 import { renderIssues, sortedIssues } from "./view-issues.ts";
 import { renderHelp } from "./view-help.ts";
+import {
+  findCompactionSteps,
+  newCompareState,
+  renderCompactionCompare,
+} from "./view-compaction.ts";
 import { Screen } from "./screen.ts";
 import { type KeyEvent, parseKeys } from "./keys.ts";
 import { visibleWidth } from "./text.ts";
@@ -153,6 +158,15 @@ export class App {
     if (s.view === "help") return renderHelp(s);
     if (s.view === "timeline") return renderTimeline(s);
     if (s.view === "issue") return renderIssues(s);
+    if (s.view === "compaction") {
+      const items = findCompactionSteps(s);
+      const hit = items[Math.min(s.compareIndex, items.length - 1)];
+      if (!hit || !hit.step.compaction) {
+        return renderList(s);
+      }
+      if (!s.compare) s.compare = newCompareState();
+      return renderCompactionCompare(s, s.compare, hit.step.compaction, hit.label);
+    }
     return renderList(s);
   }
 
@@ -270,6 +284,28 @@ export class App {
         s.view = "timeline";
         return true;
       }
+      if (s.view === "compaction") {
+        // 在「摘要 / 条目全文 / 漏词核对」之间循环
+        if (!s.compare) s.compare = newCompareState();
+        const order: ("summary" | "swallowed" | "missing")[] = ["summary", "swallowed", "missing"];
+        const i = order.indexOf(s.compare.mode);
+        s.compare.mode = order[(i + 1) % order.length]!;
+        s.compare.rightOffset = 0;
+        return true;
+      }
+    }
+
+    // c：查看上下文压缩（有压缩才有意义）
+    if (ch === "c" && (s.view === "timeline" || s.view === "issue")) {
+      const items = findCompactionSteps(s);
+      if (items.length === 0) {
+        flash(s, "该会话没有发生上下文压缩");
+        return true;
+      }
+      s.compareIndex = 0;
+      s.compare = newCompareState();
+      s.view = "compaction";
+      return true;
     }
 
     switch (s.view) {
@@ -279,9 +315,68 @@ export class App {
         return this.handleTimelineKey(ev, name, ch);
       case "issue":
         return this.handleIssueKey(ev, name, ch);
+      case "compaction":
+        return this.handleCompactionKey(ev, name, ch);
       default:
         return false;
     }
+  }
+
+  /** 压缩对比视图的按键。 */
+  private handleCompactionKey(ev: KeyEvent, name: string, ch: string): boolean {
+    const s = this.state;
+    if (!s.compare) s.compare = newCompareState();
+    const cmp = s.compare;
+    const items = findCompactionSteps(s);
+    const cur = items[Math.min(s.compareIndex, items.length - 1)];
+    const detail = cur?.step.compaction;
+    if (!detail) return false;
+
+    const total = detail.swallowed.length;
+    if (name === "up") {
+      cmp.cursor = Math.max(0, cmp.cursor - 1);
+      return true;
+    }
+    if (name === "down") {
+      cmp.cursor = Math.min(Math.max(0, total - 1), cmp.cursor + 1);
+      return true;
+    }
+    if (ch === "k") {
+      cmp.rightOffset = Math.max(0, cmp.rightOffset - 1);
+      return true;
+    }
+    if (ch === "j") {
+      cmp.rightOffset += 1;
+      return true;
+    }
+    if (name === "pageup") {
+      cmp.cursor = Math.max(0, cmp.cursor - 10);
+      return true;
+    }
+    if (name === "pagedown") {
+      cmp.cursor = Math.min(Math.max(0, total - 1), cmp.cursor + 10);
+      return true;
+    }
+    if (ch === "g") {
+      cmp.cursor = 0;
+      return true;
+    }
+    if (ch === "G") {
+      cmp.cursor = Math.max(0, total - 1);
+      return true;
+    }
+    // n / N：在多次压缩之间切换
+    if (ch === "n" && items.length > 1) {
+      s.compareIndex = (s.compareIndex + 1) % items.length;
+      s.compare = newCompareState();
+      return true;
+    }
+    if (ch === "N" && items.length > 1) {
+      s.compareIndex = (s.compareIndex - 1 + items.length) % items.length;
+      s.compare = newCompareState();
+      return true;
+    }
+    return false;
   }
 
   private prevView: View | null = null;
@@ -558,6 +653,10 @@ export class App {
     const s = this.state;
     if (s.view === "help") {
       s.view = this.prevView ?? "list";
+      return true;
+    }
+    if (s.view === "compaction") {
+      s.view = "timeline";
       return true;
     }
     if (s.view === "issue") {

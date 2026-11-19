@@ -63,7 +63,53 @@ export interface Step {
   approxTokens?: number;
   /** 关联的 issue 下标（由 analyze 填充）。 */
   issueIndexes?: number[];
+  /** 压缩专用：这次压缩吞掉了哪些 entry、抹掉了多少 token。 */
+  compaction?: CompactionDetail;
 }
+
+/**
+ * 压缩详情。
+ *
+ * 为什么需要单独一块：pi 的 compaction entry 只存「摘要结果」，
+ * 不存摘要请求的 prompt。但被压缩的原文仍在文件里 ——
+ * 用 firstKeptEntryId 可以精确切出「哪些 entry 被吞进了摘要」，
+ * 于是「模型忘了之前的要求」这类问题可以直接逐条核对：
+ * 这条约束是被摘要丢了，还是压根没进入过上下文。
+ */
+export interface CompactionDetail {
+  /** 摘要正文（pi 生成的，即压缩的「输出」）。 */
+  summary: string;
+  /** 压缩前上下文 token（pi 记录）。 */
+  tokensBefore: number;
+  /** 摘要本身的 token（由 usage.output 或估算）。 */
+  summaryTokens: number;
+  /** 保留原文的起点 entry id（pi 的 firstKeptEntryId）。 */
+  firstKeptEntryId: string;
+  /** 被吞进摘要的 entry 列表（按原顺序，已裁剪成展示用摘要）。 */
+  swallowed: CompactedEntry[];
+  /** 被压缩的 entry 总数。 */
+  swallowedCount: number;
+  /** 被压缩部分的原始字符数（衡量「丢了多少字」）。 */
+  swallowedChars: number;
+  /** 是第几次压缩（1 起）。 */
+  ordinal: number;
+  /** 生成摘要本身的模型调用 usage。 */
+  usage?: { input: number; output: number; reasoning?: number };
+}
+
+/** 被压缩掉的一条 entry（展示用，保留可核对的关键信息）。 */
+export interface CompactedEntry {
+  entryId: string;
+  /** user / assistant / toolResult / system / thinking 等。 */
+  role: string;
+  /** 正文（工具调用已压成一行命令名 + 参数摘要）。 */
+  text: string;
+  /** 原始字符数。 */
+  chars: number;
+  /** 该条工具的报错标记。 */
+  isError?: boolean;
+}
+
 
 // ---------------------------------------------------------------------------
 // Turn：AgentLoop 的一步

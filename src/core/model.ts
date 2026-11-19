@@ -51,8 +51,16 @@ export interface Step {
   args?: Record<string, unknown>;
   /** 工具调用 id，用于把 call 和 result 配对。 */
   callId?: string;
-  /** 工具是否报错。 */
+  /** 工具是否报错（只表示需要干预的失败；「查无此命令」不算）。 */
   isError?: boolean;
+  /**
+   * 工具返回的语义结果。
+   *
+   * 单独区分出来的原因：pi 里大批 `isError=true` 的返回其实是
+   * 「知识库中没有这个命令/特性」——那是检索得到的有效结论，
+   * 不是工具故障。混在一起会让问题面板把噪音当问题报。
+   */
+  outcome?: "ok" | "not_found" | "step_gap" | "missing_params" | "invalid_params" | "real_error";
   /** 工具耗时（毫秒），pi 会记录 durationMs。 */
   durationMs?: number;
   /** 工具返回的结构化摘要（前端不必再解析）。 */
@@ -174,9 +182,12 @@ export interface Segment {
 export type IssueSeverity = "error" | "warn" | "info";
 
 export type IssueCategory =
-  | "tool_error" // 工具返回 isError
-  | "business_blocked" // 工具成功但业务 ok=false（知识库没有命令等）
+  | "not_found" // 知识库查无此命令/特性 —— 检索无结果，不是故障
+  | "tool_error" // 工具真的执行失败（网络、崩溃、未执行）
+  | "missing_params" // 缺必填参数，需补齐
+  | "invalid_params" // 参数取值非法（枚举/位域/格式）
   | "render_failed" // 渲染失败
+  | "step_gap" // 特性步骤核对发现漏步骤（业务结论，非错误）
   | "compaction" // 发生压缩（上下文断点）
   | "truncation" // 模型输出被 length 截断
   | "retry_loop" // 同参数重复调用，疑似发散

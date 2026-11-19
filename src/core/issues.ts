@@ -32,14 +32,21 @@ export function detectIssues({ segments, session }: Ctx): Issue[] {
       for (const step of turn.steps) {
         // ---- 压缩：上下文断点 ----
         if (step.kind === "compaction") {
+          // 用 pi 记录的 tokensBefore（真实值），不要用摘要的字符估算 ——
+          // 那个数字是「摘要有多长」，不是「压缩前上下文有多大」，
+          // 混用会给出完全错误的量级（实测 115.8k 被显示成 2.5k）。
+          const before = step.compaction?.tokensBefore ?? 0;
+          const after = step.compaction?.summaryTokens ?? step.approxTokens ?? 0;
           push({
             severity: "warn",
             category: "compaction",
             title: "上下文压缩发生在此处",
             detail:
-              `压缩前上下文约 ${fmtTok(step.approxTokens ?? 0)}（估算）；` +
-              `压缩后模型只能看到摘要 + 最近保留的消息，更早的原文不再进入上下文。\n` +
-              `如果你觉得「模型忘了之前的要求」，先看这一步的摘要是否丢了关键约束。`,
+              (before > 0
+                ? `压缩前上下文 ${fmtTok(before)} token → 摘要 ${fmtTok(after)} token\n`
+                : "") +
+              "压缩后模型只能看到摘要 + 最近保留的消息，更早的原文不再进入上下文。\n" +
+              "如果觉得「模型忘了之前的要求」，按 c 进入压缩对比视图逐条核对摘要有没有丢掉关键约束。",
             segmentIndex: seg.index,
             turnIndex: turn.index,
             stepKey: step.key,
@@ -49,16 +56,64 @@ export function detectIssues({ segments, session }: Ctx): Issue[] {
           continue;
         }
 
-        // ---- 工具错误 ----
+        // ---- 检索无结果：这是有效结论，不是错误 ----
+        // 模型查了知识库，确认没有这条命令/特性。这一步本身做得对，
+        // 报成 error 会让问题面板充满噪音 —— 真正要看的是参数错、
+        // 渲染失败、工具挂了。所以单独归为 info，只在需要回顾
+        // 「模型试过哪些不存在的命令」时才看得见。
+        if (step.outcome === "not_found") {
+          push({
+            severity: "info",
+            category: "not_found",
+            title: `${step.tool} 查无结果`,
+            detail:
+              (step.resultBrief ?? "") +
+              "\n这是检索得到的有效结论（知识库中确实没有该命令/特性），不是工具故障。" +
+              "\n只有当你怀疑「知识库漏收了这个命令」时才需要关注这一步。",
+            segmentIndex: seg.index,
+            turnIndex: turn.index,
+            stepKey: step.key,
+            entryId: step.entryId,
+            at: step.at,
+            tool: step.tool,
+          });
+          continue;
+        }
+
+        // ---- 步骤核对缺步骤：业务结论 ----
+        if (step.outcome === "step_gap") {
+          push({
+            severity: "info",
+            category: "step_gap",
+            title: `${step.tool} 步骤核对：有步骤未覆盖`,
+            detail:
+              (step.resultBrief ?? "") +
+              "\n这是特性步骤的覆盖核对结果，不是执行错误。",
+            segmentIndex: seg.index,
+            turnIndex: turn.index,
+            stepKey: step.key,
+            entryId: step.entryId,
+            at: step.at,
+            tool: step.tool,
+          });
+          continue;
+        }
+
+        // ---- 需要干预的失败 ----
         if ((step.kind === "tool_call" || step.kind === "tool_result") && step.isError) {
           const brief = step.resultBrief || "(无返回)";
-          const blocked = brief.startsWith("BLOCKED:");
+          const kind = step.outcome ?? "real_error";
+          const label =
+            kind === "missing_params" ? "缺必填参数"
+            : kind === "invalid_params" ? "参数取值非法"
+            : "执行失败";
           push({
-            severity: blocked ? "warn" : "error",
-            category: blocked ? "business_blocked" : "tool_error",
-            title: blocked
-              ? `${step.tool} 被拒绝（业务层 ok=false）`
-              : `${step.tool} 执行报错`,
+            severity: kind === "real_error" ? "error" : "warn",
+            category:
+              kind === "missing_params" ? "missing_params"
+              : kind === "invalid_params" ? "invalid_params"
+              : "tool_error",
+            title: `${step.tool} ${label}`,
             detail: brief + (step.args ? `\n参数：${clip(JSON.stringify(step.args), 400)}` : ""),
             segmentIndex: seg.index,
             turnIndex: turn.index,
@@ -67,20 +122,6 @@ export function detectIssues({ segments, session }: Ctx): Issue[] {
             at: step.at,
             tool: step.tool,
           });
-          if (/RENDER_FAILED/.test(brief)) {
-            push({
-              severity: "error",
-              category: "render_failed",
-              title: `${step.tool} 渲染失败`,
-              detail: brief,
-              segmentIndex: seg.index,
-              turnIndex: turn.index,
-              stepKey: step.key,
-              entryId: step.entryId,
-              at: step.at,
-              tool: step.tool,
-            });
-          }
         }
 
         // ---- 返回体积过大：挤占上下文的隐形杀手 ----

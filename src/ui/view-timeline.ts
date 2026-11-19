@@ -226,7 +226,17 @@ function renderStepLine(
     case "tool_call": {
       const kind = toolKindOf(step.tool ?? "");
       const c = toolColor(kind);
-      icon = hasIssue ? theme.error(glyph.error) : c(glyph.tool);
+      // 只有「需干预的失败」才标红。查无此命令 / 步骤核对是正常业务结论，
+      // 用灰色问号区分，避免把有效检索结果看成故障。
+      const notFound = step.outcome === "not_found";
+      const stepGap = step.outcome === "step_gap";
+      icon = step.isError
+        ? theme.error(glyph.error)
+        : notFound
+          ? theme.faint(glyph.ask)
+          : stepGap
+            ? theme.info(glyph.dot)
+            : c(glyph.tool);
       main = c(step.tool ?? "?") + theme.faint("  " + truncate(step.resultBrief ?? "", Math.max(8, width - 40)));
       tail =
         (step.durationMs ? theme.faint(fmtDuration(step.durationMs)) : "") +

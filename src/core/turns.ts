@@ -64,25 +64,47 @@ export function summarizeToolResult(
   tool: string,
   raw: string,
   isError: boolean,
-): { brief: string; chars: number; isBusinessBlocked: boolean } {
+): { brief: string; chars: number; outcome: ToolOutcome } {
   const chars = raw.length;
   const obj = safeJson(raw);
+
+  // 先判「语义失败」，因为它比 isError 更准确地反映了业务结果。
+  // 同一个 isError=true 的返回可能是三种完全不同的东西：
+  //   1. 知识库查无此命令 —— 检索无结果，是**有效结论**，不是故障
+  //   2. 缺必填参数 / 参数非法 —— 需要补齐或改正
+  //   3. 工具真的挂了（网络、超时、未执行）
+  // 全部当成 error 会让问题面板充满噪音，把真正要看的东西淹掉。
+  const semantic = classifyFailure(raw, obj);
+
+  if (semantic === "not_found") {
+    return { brief: `查无: ${notFoundDetail(obj, raw)}`, chars, outcome: "not_found" };
+  }
+  if (semantic === "step_gap") {
+    return { brief: `步骤核对: ${stepGapDetail(obj)}`, chars, outcome: "step_gap" };
+  }
+  if (semantic === "missing_params") {
+    return {
+      brief: `缺参数: ${paramDetail(obj)}`,
+      chars,
+      outcome: "missing_params",
+    };
+  }
+  if (semantic === "invalid_params") {
+    return {
+      brief: `参数非法: ${paramDetail(obj)}`,
+      chars,
+      outcome: "invalid_params",
+    };
+  }
 
   if (isError) {
     const err =
       (obj && (str(obj.error) || str(obj.message))) || raw.trim().slice(0, 300) || "(无错误信息)";
-    return { brief: `ERROR: ${err}`, chars, isBusinessBlocked: false };
+    return { brief: `ERROR: ${err}`, chars, outcome: "real_error" };
   }
   if (!obj) {
     const one = raw.trim().replace(/\s+/g, " ").slice(0, 160);
-    return { brief: one || "(空返回)", chars, isBusinessBlocked: false };
-  }
-
-  // 业务层失败：isError=false 但 ok=false。真实数据里这是最常见的「假成功」，
-  // 例如「知识库中没有命令 ADD SESSION」，不计入会严重低估问题数。
-  if (obj.ok === false) {
-    const err = str(obj.error) || str(obj.reason) || "ok=false";
-    return { brief: `BLOCKED: ${err}`, chars, isBusinessBlocked: true };
+    return { brief: one || "(空返回)", chars, outcome: "ok" };
   }
 
   const bits: string[] = [];
@@ -109,7 +131,142 @@ export function summarizeToolResult(
   }
   if (obj.ok === true && bits.length === 0) bits.push("ok");
   const brief = bits.join("  ") || raw.trim().replace(/\s+/g, " ").slice(0, 160);
-  return { brief, chars, isBusinessBlocked: false };
+  return { brief, chars, outcome: "ok" };
+}
+
+/** 工具返回的语义结果。 */
+export type ToolOutcome =
+  | "ok"
+  | "not_found" // 知识库查无此命令/特性：检索无结果，属正常业务结论
+  | "step_gap" // 步骤核对发现漏步骤：业务结论
+  | "missing_params" // 缺必填参数
+  | "invalid_params" // 参数取值非法
+  | "real_error"; // 工具真的执行失败
+
+/** 哪些 outcome 属于「需要人工干预的问题」。 */
+export function outcomeIsProblem(o: ToolOutcome): boolean {
+  return o === "real_error" || o === "missing_params" || o === "invalid_params";
+}
+
+function classifyFailure(raw: string, obj: Record<string, unknown> | null): ToolOutcome | null {
+  const errText = obj ? `${str(obj.error)} ${str(obj.hint)} ${str(obj.message)}` : "";
+  const hay = `${errText} ${raw.slice(0, 2000)}`;
+
+  // 1. 知识库查无此命令/特性。这类返回形如
+  //    {"ok":false,"error":"知识库中没有命令 ADD SESSION（站点 UEG-S）"}
+  //    {"ok":false,"error":"不支持的命令: ADD L7FILTER","supported":[...]}
+  if (
+    /知识库里?没有(命令|特性)|知识库中没有命令|不支持的命令|不支持的特性|没有找到该命令/.test(
+      hay,
+    ) ||
+    (obj && obj.ok === false && Array.isArray(obj.supported))
+  ) {
+    return "not_found";
+  }
+
+  // 2. 步骤核对：feature_steps 传 produced 后返回 missing 列表，
+  //    ok=false 表示「有步骤没覆盖」，这是业务核对结论，不是工具故障。
+  if (obj && Array.isArray(obj.missing) && Array.isArray(obj.covered)) {
+    return "step_gap";
+  }
+
+  // 3. 参数问题。
+  // ⚠ 必须判断「字段是否非空」：成功的返回里也会带
+  //   "missing_required": [] / "errors": [] 这类空数组字段，
+  //   只按字段名匹配会把成功当成失败（实测误报 4 条）。
+  if (hasNonEmptyList(obj, "missing_required")) {
+    return "missing_params";
+  }
+  if (hasNonEmptyList(obj, "param_errors") || /param_errors"\s*:\s*\[\s*\{/.test(raw)) {
+    return "invalid_params";
+  }
+  if (
+    /RENDER_FAILED|渲染失败/.test(hay) ||
+    (obj && typeof obj.invalid === "number" && obj.invalid > 0) ||
+    (obj && typeof obj.failed === "number" && obj.failed > 0)
+  ) {
+    return "invalid_params";
+  }
+  // 批量渲染里某一项失败：results[].ok === false
+  if (obj && Array.isArray(obj.results)) {
+    const bad = obj.results.filter(
+      (r) => r && typeof r === "object" && (r as Record<string, unknown>).ok === false,
+    );
+    if (bad.length > 0) {
+      const anyMissing = bad.some((r) =>
+        hasNonEmptyList(r as Record<string, unknown>, "missing_required"),
+      );
+      return anyMissing ? "missing_params" : "invalid_params";
+    }
+  }
+
+  return null;
+}
+
+/** 字段存在且是非空数组。 */
+function hasNonEmptyList(o: Record<string, unknown> | null, key: string): boolean {
+  if (!o) return false;
+  const v = o[key];
+  return Array.isArray(v) && v.length > 0;
+}
+
+/** 从「查无」返回里取出关键信息：查的是什么。 */
+function notFoundDetail(obj: Record<string, unknown> | null, raw: string): string {
+  if (!obj) return raw.trim().replace(/\s+/g, " ").slice(0, 120);
+  const target =
+    str(obj.command_name) || str(obj.feature_name) || extractQuoted(str(obj.error)) || "";
+  const site = str(obj.site_type);
+  const err = str(obj.error) || "查无结果";
+  return `${target ? target + " " : ""}${site ? `(${site}) ` : ""}${err}`.trim();
+}
+
+/** 步骤核对结论：漏了哪几步。 */
+function stepGapDetail(obj: Record<string, unknown> | null): string {
+  if (!obj) return "步骤核对未通过";
+  const total = obj.total_steps ?? obj.step_count ?? "?";
+  const covered = Array.isArray(obj.covered) ? obj.covered.length : "?";
+  const missing = Array.isArray(obj.missing) ? obj.missing : [];
+  const names = missing
+    .slice(0, 4)
+    .map((m) => {
+      const o = m as Record<string, unknown>;
+      return `${str(o.step)}${o.title ? " " + str(o.title) : ""}`;
+    })
+    .join("、");
+  return `${covered}/${total} 步已覆盖${names ? `，缺 ${names}` : ""}`;
+}
+
+/** 参数问题的具体条目。 */
+function paramDetail(obj: Record<string, unknown> | null): string {
+  if (!obj) return "参数不完整";
+  const list: string[] = [];
+  if (Array.isArray(obj.missing_required)) {
+    list.push(...obj.missing_required.map((x) => str(x)).filter(Boolean));
+  }
+  if (Array.isArray(obj.param_errors)) {
+    for (const e of obj.param_errors.slice(0, 4)) {
+      const o = e as Record<string, unknown>;
+      list.push(`${str(o.param) || str(o.name) || "?"}: ${str(o.message) || str(o.error) || ""}`);
+    }
+  }
+  if (Array.isArray(obj.results)) {
+    for (const r of obj.results) {
+      const o = r as Record<string, unknown>;
+      if (o.ok === false) {
+        const mr = Array.isArray(o.missing_required) ? o.missing_required.map(str) : [];
+        if (mr.length) list.push(`${str(o.command_name)} 缺 ${mr.join(",")}`);
+        else if (str(o.error)) list.push(`${str(o.command_name)}: ${str(o.error)}`);
+      }
+    }
+  }
+  const uniq = [...new Set(list)].slice(0, 20);
+  return uniq.length ? uniq.join("; ") : str(obj.error) || "参数不合法";
+}
+
+/** 从「知识库中没有命令 ADD SESSION（站点 UEG-S）」里取出 ADD SESSION。 */
+function extractQuoted(s: string): string {
+  const m = s.match(/(?:命令|特性)\s*[:：]?\s*([A-Z][A-Z0-9 ]+[A-Z0-9])/);
+  return m ? m[1]!.trim() : "";
 }
 
 function safeJson(raw: string): Record<string, unknown> | null {
@@ -284,7 +441,9 @@ export function buildTurns({ entries, sessionStart }: TurnBuildInput): Turn[] {
       const sum = summarizeToolResult(toolName, raw, Boolean(tr.isError));
 
       if (found) {
-        found.step.isError = Boolean(tr.isError) || sum.isBusinessBlocked;
+        found.step.outcome = sum.outcome;
+        // isError 只表示「需要干预」的失败；查无此命令不算
+        found.step.isError = outcomeIsProblem(sum.outcome);
         found.step.durationMs = tr.durationMs;
         found.step.resultBrief = sum.brief;
         found.step.resultChars = sum.chars;
@@ -301,7 +460,8 @@ export function buildTurns({ entries, sessionStart }: TurnBuildInput): Turn[] {
           at: iso,
           offsetMs: at ? at - sessionStart : 0,
           tool: toolName,
-          isError: Boolean(tr.isError) || sum.isBusinessBlocked,
+          isError: outcomeIsProblem(sum.outcome),
+          outcome: sum.outcome,
           resultBrief: sum.brief,
           resultChars: sum.chars,
           approxTokens: estimateTokens(raw),

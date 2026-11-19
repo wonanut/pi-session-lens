@@ -81,15 +81,17 @@ export function renderHelp(state: AppState): string[] {
 
   h("问题信号怎么判定");
   for (const [label, desc] of [
-    ["工具错误", "isError=true，工具真的失败了"],
-    ["业务拒绝", "ok=false，工具跑通但被业务层否决（如知识库无此命令）"],
-    ["渲染失败", "RENDER_FAILED，参数取值不合法"],
-    ["压缩", "上下文被摘要替换，是关键断点"],
-    ["截断", "stopReason=length，模型输出被上限截断"],
-    ["发散", "同参数重复调用，疑似原地打转"],
-    ["大返回", "单次结果体积过大，会推高上下文占用"],
+    ["查无结果", "知识库中确实没有该命令/特性 —— 有效结论，不是故障（info）"],
+    ["步骤核对", "有步骤未覆盖 —— 核对结论，不是执行错误（info）"],
+    ["执行失败", "网络/超时/未执行/崩溃 —— 工具真的挂了（error）"],
+    ["缺必填参数", "missing_required 非空，需补齐（warn）"],
+    ["参数非法", "RENDER_FAILED / 枚举位域格式错（warn）"],
+    ["压缩", "上下文被摘要替换，是关键断点（warn）"],
+    ["截断", "stopReason=length，模型输出被上限截断（warn）"],
+    ["发散", "同参数重复调用，疑似原地打转（info）"],
+    ["大返回", "单次结果体积过大，会推高上下文占用（info）"],
   ] as [string, string][]) {
-    body.push("  " + theme.warn(padEnd(label, 10)) + theme.dim(desc));
+    body.push("  " + theme.warn(padEnd(label, 12)) + theme.dim(desc));
   }
   blank();
 

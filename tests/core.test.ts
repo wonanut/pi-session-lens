@@ -19,7 +19,7 @@ import {
   toolCalls,
   thinkingText,
 } from "../src/core/parser.ts";
-import { buildTurns, summarizeToolResult } from "../src/core/turns.ts";
+import { buildTurns, outcomeIsProblem, summarizeToolResult } from "../src/core/turns.ts";
 import { extractPrompts } from "../src/core/prompts.ts";
 import { buildSegmentsDetailed } from "../src/core/segments.ts";
 import { analyzeSessionFile } from "../src/core/analyze.ts";
@@ -99,22 +99,72 @@ test("sessionIdFromFilename 解析 <ts>_<id>.jsonl", () => {
   assert.equal(sessionIdFromFilename("/x/plain.jsonl"), "plain");
 });
 
-test("summarizeToolResult 识别业务层 ok=false", () => {
-  const r = summarizeToolResult("mml_command_spec", '{"ok": false, "error": "知识库中没有命令 ADD SESSION"}', false);
-  assert.equal(r.isBusinessBlocked, true);
-  assert.match(r.brief, /BLOCKED/);
+test("summarizeToolResult 把「知识库查无此命令」识别为 not_found（非故障）", () => {
+  const r = summarizeToolResult(
+    "mml_command_spec",
+    '{"ok": false, "error": "知识库中没有命令 ADD SESSION（站点 UEG-S）"}',
+    true,
+  );
+  assert.equal(r.outcome, "not_found", "查无此命令应归为 not_found 而不是错误");
+  assert.equal(outcomeIsProblem(r.outcome), false, "not_found 不应算作需要干预的问题");
   assert.match(r.brief, /ADD SESSION/);
 });
 
-test("summarizeToolResult 保留 isError 的错误全文", () => {
-  const r = summarizeToolResult("x", '{"error":"boom 详细原因"}', true);
-  assert.match(r.brief, /^ERROR: boom 详细原因$/);
+test("summarizeToolResult：不支持的命令 + supported 列表也算 not_found", () => {
+  const r = summarizeToolResult(
+    "mml_exp_names",
+    '{"ok": false, "error": "不支持的命令: ADD L7FILTER", "supported": ["ADD FILTER"]}',
+    true,
+  );
+  assert.equal(r.outcome, "not_found");
+  assert.equal(outcomeIsProblem(r.outcome), false);
+});
+
+test("summarizeToolResult：成功返回带空 missing_required 不算缺参数", () => {
+  const okBody = JSON.stringify({
+    ok: true,
+    status: "RENDERED",
+    command_name: "ADD L3VPNINST",
+    missing_required: [],
+    errors: [],
+  });
+  const r = summarizeToolResult("mml_render_mml", okBody, false);
+  assert.equal(r.outcome, "ok", "空 missing_required 不应被判成缺参数");
+});
+
+test("summarizeToolResult：真正缺必填参数归为 missing_params", () => {
+  const body = JSON.stringify({
+    ok: false,
+    results: [{ ok: false, command_name: "ADD APN", missing_required: ["APN", "IPVERSION"] }],
+  });
+  const r = summarizeToolResult("mml_render_batch", body, true);
+  assert.equal(r.outcome, "missing_params");
+  assert.equal(outcomeIsProblem(r.outcome), true);
+});
+
+test("summarizeToolResult：真正的执行失败仍是 real_error", () => {
+  const r = summarizeToolResult("bash", "Connection timed out", true);
+  assert.equal(r.outcome, "real_error");
+  assert.equal(outcomeIsProblem(r.outcome), true);
+  assert.match(r.brief, /^ERROR: /);
+});
+
+test("summarizeToolResult：步骤核对结论归为 step_gap", () => {
+  const body = JSON.stringify({
+    ok: false,
+    total_steps: 10,
+    covered: ["1", "2"],
+    missing: [{ step: "3", title: "配置X" }],
+  });
+  const r = summarizeToolResult("mml_feature_steps", body, true);
+  assert.equal(r.outcome, "step_gap");
+  assert.equal(outcomeIsProblem(r.outcome), false);
 });
 
 test("summarizeToolResult 正常返回提炼数量字段", () => {
   const r = summarizeToolResult("mml_knowledge_search", '{"ok":true,"hits":[1,2,3]}', false);
   assert.match(r.brief, /hits:3/);
-  assert.equal(r.isBusinessBlocked, false);
+  assert.equal(r.outcome, "ok");
 });
 
 const sample = findSampleSession();

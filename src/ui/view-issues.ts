@@ -168,18 +168,28 @@ function renderIssueDetail(state: AppState, iss: Issue | undefined, width: numbe
 
 function adviceFor(iss: Issue): string {
   switch (iss.category) {
+    case "not_found":
+      return "模型查了知识库，确认没有这条命令/特性。这是有效的检索结论，" +
+        "说明它没有凭记忆编命令（这一步是对的）。" +
+        "只有当你确信「知识库本该收录却漏了」时才需要处理。";
+    case "step_gap":
+      return "这是特性步骤的覆盖核对：模型自己把所有步骤和已生成命令对过一遍，" +
+        "发现还有步骤没配。属于核对结论，需要补步骤而不是改代码。";
     case "tool_error":
-      return "工具真的报错了。回车跳到该步，看参数是否传错；如果同一工具连续报错，" +
-        "通常是模型对参数结构的理解有偏差，而不是偶发故障。";
-    case "business_blocked":
-      return "工具本身跑通，但业务层拒绝（ok=false）。常见于「知识库里没有这个命令」。" +
-        "这类问题往往说明模型在凭记忆编命令名 —— 看它前一步的检索是否没命中。";
+      return "工具真的执行失败了（网络、超时、未执行、崩溃）。" +
+        "跳到该步看错误原文和参数；同一工具连续失败通常不是偶发。";
+    case "missing_params":
+      return "必填参数没给全，工具拒绝渲染。看 missing_required 里缺哪些，" +
+        "这类问题通常说明模型对命令的必填项理解不完整。";
+    case "invalid_params":
+      return "参数名对、取值不合法（枚举写错、位域缺 -0/-1 后缀、格式错）。" +
+        "跳到该步看 param_errors 逐条改正。";
     case "render_failed":
-      return "渲染失败通常是参数取值不在允许范围。跳到该步看 params，" +
-        "重点核对枚举值、位域后缀（-0/-1）、必填项是否齐全。";
+      return "渲染失败通常是参数取值不在允许范围。重点核对枚举值、" +
+        "位域后缀（-0/-1）、必填项是否齐全。";
     case "compaction":
       return "压缩把之前的原文换成了摘要。如果用户抱怨「模型忘了之前的要求」，" +
-        "先看这一步的摘要是否保留了关键约束（对象名、取值、禁止项）。";
+        "按 c 进入压缩对比视图，看摘要是否保留了关键约束（对象名、取值、禁止项）。";
     case "truncation":
       return "模型输出被长度上限截断。如果这一轮本该输出完整命令清单，" +
         "用户看到的就是残缺结果 —— 需要让任务拆分或提高输出上限。";

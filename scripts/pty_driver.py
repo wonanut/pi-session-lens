@@ -279,6 +279,16 @@ SCENARIOS = [
         "steps": [("c", 0.8, "c")],
         "expect": ["没有发生上下文压缩"],
     },
+    {
+        "name": "a 键切换自动刷新开关",
+        "steps": [("a", 0.6, "toggle-off"), ("a", 0.6, "toggle-on")],
+        "expect": ["自动"],
+    },
+    {
+        "name": "r 键手动刷新列表",
+        "steps": [("r", 1.2, "refresh")],
+        "expect": ["已刷新"],
+    },
 ]
 
 
@@ -302,6 +312,19 @@ def pick_session(kind):
         if kind == "issues" and has_err:
             return p
     return TARGET
+
+
+def make_refresh_fixture():
+    """准备一个只含少量会话的临时目录，供刷新场景使用。"""
+    import glob
+    import shutil
+    import tempfile
+
+    d = tempfile.mkdtemp(prefix="pi-lens-refresh-")
+    files = sorted(glob.glob(os.path.join(TARGET, "*.jsonl")))[:2]
+    for f in files:
+        shutil.copy(f, d)
+    return d, files
 
 
 def run_scenario(sc):

@@ -145,9 +145,18 @@ export function renderList(state: AppState): string[] {
     ? theme.accentStrong("搜索: ") + theme.white(state.query) + theme.accentStrong("█")
     : state.query
       ? theme.accentStrong("搜索: ") + theme.bright(state.query) + theme.faint("  (Esc 清空)")
-      : theme.faint("按 / 搜索   空格 只看有问题   回车 打开");
+      : theme.faint("按 / 搜索   空格 只看有问题   r 刷新   a 自动   回车 打开");
 
   const sum = summarizeFiltered(state.filtered);
+  const refreshStage =
+    state.refreshing
+      ? theme.info("  刷新中…")
+      : state.lastRefreshAt > 0
+        ? theme.faint(`  ${fmtAgo(state.lastRefreshAt)}刷新`)
+        : "";
+  const autoTag =
+    state.autoRefreshMs > 0 ? theme.ok("  自动") : theme.faint("  手动");
+
   const statsLine =
     theme.faint("共 ") +
     theme.white(String(state.summaries.length)) +
@@ -157,6 +166,8 @@ export function renderList(state: AppState): string[] {
     theme.compaction(`${sum.compactions} 压缩`) +
     theme.faint(" · ") +
     theme.muted(`${fmtBytes(sum.bytes)}`) +
+    refreshStage +
+    autoTag +
     (state.onlyProblems ? theme.warn("  [已过滤: 有问题]") : "");
 
   out.push(padEnd(truncate(searchLine, width, ""), width));

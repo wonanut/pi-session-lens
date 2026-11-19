@@ -55,6 +55,13 @@ export interface AppState {
   /** 布局过滤：只看有问题的会话。 */
   onlyProblems: boolean;
 
+  /** 是否正在刷新（与首次 loading 区分，避免闪烁）。 */
+  refreshing: boolean;
+  /** 上次刷新完成的时间戳，用于底栏显示「N 秒前」。 */
+  lastRefreshAt: number;
+  /** 自动刷新开关与间隔（毫秒）。0 表示关闭。 */
+  autoRefreshMs: number;
+
   /** 临时状态栏消息（会自动消失）。 */
   flash: string | null;
   flashAt: number;
@@ -96,6 +103,11 @@ export function initialState(): AppState {
     compare: null,
     compareIndex: 0,
     onlyProblems: false,
+    refreshing: false,
+    lastRefreshAt: 0,
+    // 默认开启自动刷新：用户把 pi 跑在另一个终端，回来就能看到新会话。
+    // 10 秒间隔对 1000+ 会话的增量扫描（走缓存）几乎无感。
+    autoRefreshMs: 10_000,
     flash: null,
     flashAt: 0,
     width: 100,

@@ -185,7 +185,8 @@ async function main(): Promise<void> {
 
   const { App } = await import("../src/ui/app.ts");
   const plain = args.plain || !process.stdout.isTTY;
-  const app = new App({ files, initialPath, plain });
+  // roots 保留用户原始输入，刷新时用它重新扫描（拿得到启动后新建的会话）
+  const app = new App({ files, roots: args.paths, initialPath, plain });
 
   // plain 模式下设置固定尺寸
   if (plain) {

@@ -30,14 +30,21 @@ import {
 import { Screen } from "./screen.ts";
 import { type KeyEvent, parseKeys } from "./keys.ts";
 import { visibleWidth } from "./text.ts";
+import { fmtAgo } from "./text.ts";
 import { padEnd } from "./text.ts";
 
-import type { DiscoveredFile } from "../core/discover.ts";
+import { resolveTargets, type DiscoveredFile } from "../core/discover.ts";
 import { summarizeAll, type SessionSummary } from "../core/summaries.ts";
 import { analyzeSessionFile } from "../core/analyze.ts";
 
 export interface RunOptions {
   files: DiscoveredFile[];
+  /**
+   * 用户显式指定的扫描根（文件或目录）。
+   * 为空表示按环境变量/默认位置探测 —— 刷新时需要用它重新扫描，
+   * 否则拿不到启动后新建的会话。
+   */
+  roots: string[];
   /** 启动时直接打开的会话路径（`pi-lens <file>`）。 */
   initialPath?: string;
   /** 无 TTY 时输出一帧静态快照后退出（便于管道/测试）。 */
@@ -52,6 +59,8 @@ export class App {
   private needsRender = true;
   private escTimer: NodeJS.Timeout | null = null;
   private pendingEsc = false;
+  private autoTimer: NodeJS.Timeout | null = null;
+  private lastAutoRefresh = 0;
 
   constructor(opts: RunOptions) {
     this.opts = opts;
@@ -64,14 +73,50 @@ export class App {
   }
 
   /** 加载会话列表（带进度提示）。 */
-  async loadSummaries(): Promise<void> {
-    this.state.loading = true;
+  /**
+   * 重新扫描会话目录并刷新列表。
+   *
+   * 为什么要重新扫描而不是复用 opts.files：opts.files 是启动那一刻的
+   * 快照，之后新建的会话文件不在里面 —— 这才是「看不到最新会话」的根因。
+   * 每次刷新都要重新 collect，才能拿到新文件。
+   *
+   * 已有文件的摘要走磁盘缓存（mtime+size 未变直接复用），
+   * 所以 1000+ 会话的增量刷新通常只需几十毫秒。
+   */
+  async loadSummaries(notify = false): Promise<void> {
+    const s = this.state;
+    s.loading = true;
+    if (notify) s.refreshing = true;
     this.requestRender();
-    const list = await summarizeAll(this.opts.files, 8);
-    this.state.summaries = list;
-    applyFilter(this.state);
-    this.state.loading = false;
-    this.requestRender();
+
+    try {
+      // 重新扫描（不传路径时按 PI_LENS_SESSION_DIR / ~/.pi / ./var/pi_sessions 探测）
+      const targets = this.opts.roots.length > 0 ? this.opts.roots : this.opts.files.map((f) => f.root);
+      const files = resolveTargets(targets);
+      this.opts.files = files;
+
+      const list = await summarizeAll(files, 8);
+      s.summaries = list;
+      applyFilter(s);
+      // 保持光标位置不越界
+      s.listCursor = Math.min(s.listCursor, Math.max(0, s.filtered.length - 1));
+
+      if (notify) {
+        const newest = list[0];
+        flash(
+          s,
+          `已刷新 · ${list.length} 个会话` +
+            (newest ? ` · 最新 ${fmtAgo(newest.mtimeMs)}` : ""),
+        );
+      }
+      s.lastRefreshAt = Date.now();
+    } catch (err) {
+      if (notify) flash(s, `刷新失败: ${(err as Error).message.slice(0, 40)}`);
+    } finally {
+      s.loading = false;
+      s.refreshing = false;
+      this.requestRender();
+    }
   }
 
   /** 打开一个会话并分析。 */
@@ -145,6 +190,41 @@ export class App {
       setImmediate(tick);
     };
     tick();
+
+    this.startAutoRefresh();
+  }
+
+  /**
+   * 自动刷新定时器。
+   *
+   * 只在列表页刷新：用户在时间轴里看某个会话时，突然刷新列表会把他的
+   * 上下文打乱；而且那时列表也不在屏幕上，刷了看不见。
+   * 切回列表页时由 handleEvent 立即补一次刷新，所以不会有「久未更新」的问题。
+   */
+  private startAutoRefresh(): void {
+    if (this.autoTimer) return;
+    // 每 2 秒醒来检查一次，真正决定刷不刷的是 autoRefreshMs 间隔。
+    // 这样「切换间隔」不必重建定时器。
+    this.autoTimer = setInterval(() => {
+      const s = this.state;
+      if (!this.running) return;
+      if (s.autoRefreshMs <= 0) return;
+      if (s.view !== "list") return;
+      if (s.loading || s.searching) return; // 正在加载/搜索时不打断
+      const due = this.lastAutoRefresh + s.autoRefreshMs;
+      if (Date.now() < due) return;
+      this.lastAutoRefresh = Date.now();
+      void this.loadSummaries(false);
+    }, 2000);
+    // 定时器不应阻止进程退出
+    this.autoTimer.unref?.();
+  }
+
+  private stopAutoRefresh(): void {
+    if (this.autoTimer) {
+      clearInterval(this.autoTimer);
+      this.autoTimer = null;
+    }
   }
 
   private renderOnce(): void {
@@ -269,9 +349,28 @@ export class App {
       }
       return true;
     }
-    if (ch === "r") {
+    if (ch === "r" || ch === "R") {
+      // 列表页：重新扫描目录（拿到新建的会话）
+      if (s.view === "list") {
+        this.lastAutoRefresh = Date.now();
+        void this.loadSummaries(true);
+        return true;
+      }
+      // 会话内：重新解析当前会话
       if (s.view === "timeline" && s.currentPath) {
         void this.openSession(s.currentPath).then(() => flash(s, "已重新加载"));
+      }
+      return true;
+    }
+    // a：切换自动刷新
+    if (ch === "a" && s.view === "list") {
+      if (s.autoRefreshMs > 0) {
+        s.autoRefreshMs = 0;
+        flash(s, "自动刷新已关闭（a 重新开启）");
+      } else {
+        s.autoRefreshMs = 10_000;
+        this.lastAutoRefresh = Date.now();
+        flash(s, "自动刷新已开启（每 10 秒）");
       }
       return true;
     }
@@ -665,6 +764,12 @@ export class App {
     }
     if (s.view === "timeline") {
       s.view = "list";
+      // 回到列表时补一次刷新：离开期间可能有新会话产生，
+      // 而自动刷新在非列表页是暂停的。
+      if (s.autoRefreshMs > 0) {
+        this.lastAutoRefresh = Date.now();
+        void this.loadSummaries(false);
+      }
       return true;
     }
     this.quit();
@@ -674,6 +779,7 @@ export class App {
   private quit(): void {
     if (!this.running) return;
     this.running = false;
+    this.stopAutoRefresh();
     if (this.escTimer) clearTimeout(this.escTimer);
     this.screen.stop();
     process.stdin.setRawMode?.(false);

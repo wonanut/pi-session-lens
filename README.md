@@ -5,15 +5,20 @@ pi-agent 会话可视化分析 —— **两层循环**终端界面，用来快�
 读的是 pi 自己写的 jsonl 会话记录（`~/.pi/agent/sessions/**` 或工程内的
 `var/pi_sessions`），不改动原始文件，纯只读分析。
 
-```
-╭ SessionLoop ▸ AgentLoop ───────────────── 4/38 · 1 段 ╮ ╭ 工具 · mml_knowledge_search ──╮
-│   SEG 1  23:09:55  对网元 `H…  9轮 · 14工具  1问      │ │工具调用 mml_knowledge_search  │
-│  ├  T1  · ds-flash · 10.5k ctx · 12ms · 3步           │ │23:09:55  ·  entry cc1cb6c7    │
-│  ├ ▸ mml_require_check  ok                         3ms│ │───────────────────────────────│
-│❯ ├ ▸ mml_knowledge_search  query=高铁扩…           8ms│ │参数                           │
-│  └ ▪ 输出 I'll start by checki…                 29tok│ │  { "query": "高铁扩展…" }     │
-╰───────────────────────────────────────────────────────╯ ╰───────────────────────────────╯
-```
+![会话列表](docs/screenshots/01-list.png)
+
+## 时间轴 + AgentLoop 流程图
+
+左侧是两层循环时间轴，右上方固定显示当前选中轮的**循环结构**，
+在左侧移动光标时图上对应节点实时高亮（`◀ 当前`）：
+
+![时间轴与流程图](docs/screenshots/02-timeline-flow.png)
+
+选中某次具体的工具调用时，流程图会精确高亮到**那一次调用**，
+同轮多次调用不会互相混淆：
+
+![流程图联动高亮](docs/screenshots/03-flow-highlight.png)
+
 
 ## 为什么是「两层」
 
@@ -31,25 +36,25 @@ pi 的会话文件是一行一条记录的平铺 JSONL，但真实运行是嵌�
 
 ## AgentLoop 流程图（与时间轴联动）
 
-时间轴右上方固定显示**当前选中轮的循环结构**，并在时间轴上移动光标时
-实时高亮对应节点（`◀ 当前`）：
+时间轴右上方固定显示**当前选中轮的循环结构**（见上方截图），
+按 pi 的真实循环纵向展开：
 
 ```
-T1 deepseek-flash · 9.3k ctx · 45ms
+T1 deepseek-flash · 9.3k ctx · 45ms        ← 头部（选中轮时标 ◀ 当前轮）
 
-① 构建请求  system + 分支 3 步 + 工具
+① 构建请求   system + 分支 3 步 + 工具
   │
-② 思考  1 段 · 168tok            ◀ 当前     ← 选中 thinking 时亮这里
+② 思考       1 段 · 168tok                 ← 选中 thinking 时标 ◀ 当前
   │
   ├─ ③ 决定调用工具
-      ├ mml_knowledge_search  query=创建L3VPN实例 ipv4u…  ◀ 当前
-      └ mml_knowledge_search  query=GRE隧道 创建  hits:10
+      ├ mml_knowledge_search  query=…      ← 选中该次调用时标 ◀ 当前
+      └ mml_knowledge_search  query=…
   │
-④ 执行工具  2 个  ✓
+④ 执行工具   2 个 ✓
   │
-⑤ 出口判定  → 有工具结果 → 再来一轮
+⑤ 出口判定   → 有工具结果 → 再来一轮
 
-  ↑ 回流  工具结果进入上下文 → 回到 ② 思考（下一轮）  → T2
+  ↑ 回流   工具结果进入上下文 → 回到 ② 思考（下一轮）  → T2
 ```
 
 **联动规则**（选中什么，就亮什么）：
@@ -220,7 +225,8 @@ src/ui/
   screen.ts                 备用屏幕 + 差分渲染
   pi-tui-loader.ts          复用 pi 自带 pi-tui 的定位逻辑
 tests/                      单元 / 布局 / 主题 / 流程图联动测试
-scripts/                    verify.sh（按需验证）、interact.mjs+pty_driver.py（交互验收）
+scripts/                    verify.sh（按需验证）、interact.mjs+pty_driver.py（pty 交互验收）
+docs/screenshots/           README 用运行截图
 ```
 
 ## 与 config-generation-design-agent 的关系

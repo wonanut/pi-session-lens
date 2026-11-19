@@ -14,8 +14,8 @@
  * 分屏会打断这个顺序；缩进能在一屏里同时看到层级和先后。
  */
 import type { AppState, TimelineRow } from "./state.ts";
-import type { Issue, Segment, Step, Turn } from "../core/model.ts";
-import { buildTimelineRows } from "./state.ts";
+import type { AgentLoop, Issue, Segment, Step, Turn } from "../core/model.ts";
+import { buildTimelineRows, countHidden, rowKey, visibleRows } from "./state.ts";
 import { buildFlowDiagram } from "./flow-diagram.ts";
 import { drawPanel, divider, Viewport } from "./render.ts";
 import { fmtDuration, fmtTimeSec, fmtTokens, padEnd, padStart, truncate, visibleWidth, wrap } from "./text.ts";
@@ -24,14 +24,17 @@ import { toolKindOf } from "../core/turns.ts";
 
 /** 行首缩进：段 0 / turn 2 / step 4。 */
 function indentOf(depth: number): string {
-  return " ".repeat(depth === 0 ? 0 : depth === 1 ? 2 : 4);
+  // 0=段 1=loop 2=迭代 3=step，每层缩进 2 列
+  return " ".repeat(Math.max(0, depth) * 2);
 }
 
-/** 连接线。 */
+/** 连接线：按层级画树。 */
 function connector(row: TimelineRow, isLast: boolean): string {
   if (row.depth === 0) return "";
+  // 每一层用 2 列：父层留竖线，本层画 ├/└
+  const guides = "  ".repeat(Math.max(0, row.depth - 1));
   const branch = isLast ? glyph.corner : glyph.tee;
-  return theme.border(indentOf(row.depth - 1).slice(2) + branch + " ");
+  return theme.border(guides + branch + " ");
 }
 
 export function renderTimeline(state: AppState): string[] {
@@ -82,7 +85,8 @@ function renderTimelinePanel(
   width: number,
   height: number,
 ): string[] {
-  const rows = state.timelineRows;
+  // 折叠：渲染只看可见行，光标索引也基于可见行
+  const rows = visibleRows(state.timelineRows, state.collapsed);
   const bodyH = height - 2;
   const vp = new Viewport();
   vp.cursor = state.timelineCursor;
@@ -137,6 +141,9 @@ function renderRow(
   let content = "";
   if (row.kind === "segment") {
     content = renderSegmentHeader(seg, contentW);
+  } else if (row.kind === "loop") {
+    const loop = (seg.loops ?? []).find((l) => l.index === row.loopIndex);
+    if (loop) content = renderLoopLine(loop, row, isLast, contentW);
   } else if (row.kind === "turn") {
     const turn = seg.turns.find((t) => t.index === row.turnIndex);
     if (turn) content = renderTurnLine(turn, row, isLast, contentW);
@@ -146,10 +153,56 @@ function renderRow(
   }
 
   const clipped = visibleWidth(content) > contentW ? truncate(content, contentW, "") : content;
-  const head = selected ? theme.accentStrong(glyph.cursor) + " " : "  ";
-  return selected
-    ? theme.selBg(padEnd(head + padEnd(clipped, contentW), width))
-    : head + padEnd(clipped, contentW);
+
+  // 折叠标记：可折叠的行前面加 ▾/▸，折叠时附上「藏了多少行」。
+  // 选中态的行也保留折叠标记（用光标代替 ▾，但仍显示隐藏计数），
+  // 否则选中时就看不到自己折叠了多少。
+  const key = rowKey(row);
+  const collapsible = key !== null;
+  const isCollapsed = collapsible && state.collapsed.has(key!);
+  let hiddenNote = "";
+  if (collapsible && isCollapsed) {
+    const n = countHidden(state.timelineRows, key!);
+    if (n > 0) hiddenNote = theme.warn(`  ⋯${n}`);
+  }
+
+  const marker = selected
+    ? theme.accentStrong(glyph.cursor) + " "
+    : collapsible
+      ? isCollapsed
+        ? theme.warn("▸ ")
+        : theme.faint("▾ ")
+      : "  ";
+
+  const text = padEnd(truncate(clipped, contentW - 2, "") + hiddenNote, contentW - 2);
+  const line = marker + text;
+  return selected ? theme.selBg(padEnd(line, width)) : padEnd(line, width);
+}
+
+/**
+ * 渲染 loop 行（第三层）。
+ *
+ * 这一行是之前缺失的层级：它让「一个用户请求 = 一个循环体」变得可见，
+ * 下面的 T1/T2/... 是循环内部的迭代，而不是并列的独立单元。
+ */
+function renderLoopLine(
+  loop: AgentLoop,
+  row: TimelineRow,
+  isLast: boolean,
+  width: number,
+): string {
+  const conn = connector(row, isLast);
+  const badge = theme.accentStrong(theme.bold(`↻ LOOP ${loop.index + 1}`));
+  const stat =
+    theme.faint(`  ${loop.iterationCount} 次迭代`) +
+    theme.faint(` · ${loop.toolCallCount} 工具`) +
+    (loop.errorCount > 0 ? theme.error(` · ${loop.errorCount} 失败`) : "");
+  const end = loop.converged
+    ? theme.ok(`  ${glyph.ok}已收敛`)
+    : theme.warn(`  ${glyph.warn}未收敛`);
+
+  const line = conn + badge + stat + end;
+  return visibleWidth(line) > width ? truncate(line, width, "") : line;
 }
 
 function renderSegmentHeader(seg: Segment, width: number): string {
@@ -179,7 +232,7 @@ function renderTurnLine(
   _width: number,
 ): string {
   const conn = connector(row, isLast);
-  const badgeTxt = ` T${turn.index + 1} `;
+  const badgeTxt = ` ▸${turn.index + 1} `;
   const badge = turn.hasError ? theme.error(theme.bold(badgeTxt)) : theme.accent(badgeTxt);
   const model = turn.model ? theme.muted(turn.model.replace(/^deepseek-/, "ds-")) : "";
   const ctx = turn.contextTokens
@@ -309,7 +362,8 @@ function renderDetailPanel(
   width: number,
   height: number,
 ): string[] {
-  const row = state.timelineRows[state.timelineCursor];
+  const visible = visibleRows(state.timelineRows, state.collapsed);
+  const row = visible[state.timelineCursor];
   const innerW = width - 2;
   let body: string[] = [];
   let title = "详情";
@@ -328,7 +382,10 @@ function renderDetailPanel(
     const turn = seg?.turns.find((t) => t.index === row.turnIndex);
     if (turn) {
       body = detailTurn(turn, innerW);
-      title = `AgentLoop T${turn.index + 1}`;
+      // 用「迭代」而非 T，与 loop 内部迭代的语义保持一致
+      const loopIdx = (seg?.loops ?? []).findIndex((l) => l.turns.some((t) => t.index === turn.index));
+      const iterNo = loopIdx >= 0 ? (seg.loops[loopIdx]!.turns.findIndex((t) => t.index === turn.index) + 1) : 0;
+      title = iterNo > 0 ? `迭代 ${iterNo}` : `迭代`;
     }
   } else if (row.kind === "step" && row.stepKey) {
     const seg = a.segments[row.segmentIndex];
@@ -595,15 +652,24 @@ function healthBar(health: number): string {
 }
 
 function renderFooterLine(state: AppState): string {
+  const tail = state.flash ? theme.warn(state.flash) : "";
   const keys: [string, string][] = [
     ["↑↓", "行"],
-    ["→←", "层级"],
-    ["j/k", "详情滚动"],
+    ["→←", "层级/折叠"],
+    ["Z/E", "全折叠/展开"],
+    ["z", "按层折叠"],
+    ["j/k", "详情"],
     ["tab", "问题"],
     ["esc", "返回"],
-    ["q", "退出"],
   ];
-  const parts = keys.map(([k, d]) => theme.accent(k) + theme.faint(" " + d));
-  const tail = state.flash ? theme.warn("  " + state.flash) : "";
-  return padEnd(truncate(parts.join(theme.faint(" · ")) + tail, state.width, ""), state.width);
+
+  // flash 优先：提示是用户刚触发动作的反馈，必须看得见；
+  // 按键提示是常驻参考，空间不够时可以让位（否则新加的折叠键
+  // 会把 flash 挤出屏幕，表现为「按了键没反应」）。
+  const hint = keys.map(([k, d]) => theme.accent(k) + theme.faint(" " + d)).join(theme.faint(" · "));
+  const tailW = tail ? visibleWidth(tail) + 2 : 0;
+  const room = Math.max(0, state.width - tailW);
+  const hintClipped = visibleWidth(hint) > room ? truncate(hint, room, "…") : hint;
+  const line = hintClipped + (tail ? "  " + tail : "");
+  return padEnd(truncate(line, state.width, ""), state.width);
 }

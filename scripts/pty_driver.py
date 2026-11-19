@@ -280,6 +280,26 @@ SCENARIOS = [
         "expect": ["没有发生上下文压缩"],
     },
     {
+        "name": "Z 全部折叠到段",
+        "steps": [("\r", 2.2, "open"), ("Z", 0.8, "collapse-all")],
+        "expect": ["SEG 1", "⋯", "已折叠到段"],
+    },
+    {
+        "name": "E 全部展开恢复",
+        "steps": [("\r", 2.2, "open"), ("Z", 0.7, "col"), ("E", 0.8, "exp")],
+        "expect": ["LOOP 1"],
+    },
+    {
+        "name": "z 按粒度折叠（迭代→循环→段）",
+        "steps": [("\r", 2.2, "open"), ("z", 0.7, "z1"), ("z", 0.7, "z2")],
+        "expect": ["已按"],
+    },
+    {
+        "name": "左箭头折叠当前节点",
+        "steps": [("\r", 2.2, "open"), ("\x1b[D", 0.8, "left")],
+        "expect": ["已折叠"],
+    },
+    {
         "name": "a 键切换自动刷新开关",
         "steps": [("a", 0.6, "toggle-off"), ("a", 0.6, "toggle-on")],
         "expect": ["自动"],
@@ -308,7 +328,9 @@ def pick_session(kind):
         if kind == "compaction" and has_comp:
             return p
         if kind == "plain" and not has_comp:
-            return p
+            # 还需要确保会话本身有内容可展示（有 assistant）
+            if '"role":"assistant"' in txt:
+                return p
         if kind == "issues" and has_err:
             return p
     return TARGET

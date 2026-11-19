@@ -55,6 +55,16 @@ export interface AppState {
   /** 布局过滤：只看有问题的会话。 */
   onlyProblems: boolean;
 
+  /**
+   * 已折叠的节点（用节点 key 表示）。
+   *
+   * key 形如 `s1`（段）、`s1l0`（loop）、`s1l0t3`（迭代）。
+   * 折叠只影响「行是否生成」，不改动底层数据 —— 编号和定位保持稳定。
+   */
+  collapsed: Set<string>;
+  /** 折叠粒度：按段 / 按 loop / 按迭代（决定折叠键的层级）。 */
+  collapseLevel: "segment" | "loop" | "turn";
+
   /** 是否正在刷新（与首次 loading 区分，避免闪烁）。 */
   refreshing: boolean;
   /** 上次刷新完成的时间戳，用于底栏显示「N 秒前」。 */
@@ -73,11 +83,13 @@ export interface AppState {
 
 /** 时间轴上的可选中行。 */
 export interface TimelineRow {
-  kind: "segment" | "turn" | "step" | "note";
+  kind: "segment" | "loop" | "turn" | "step" | "note";
   segmentIndex: number;
   turnIndex: number;
   stepKey?: string;
-  /** 缩进层级：0=段 1=turn 2=step。 */
+  /** loop 在该段内的序号（仅 kind==="loop" 时有效）。 */
+  loopIndex?: number;
+  /** 缩进层级：0=段 1=loop 2=迭代(turn) 3=step。 */
   depth: number;
 }
 
@@ -103,6 +115,8 @@ export function initialState(): AppState {
     compare: null,
     compareIndex: 0,
     onlyProblems: false,
+    collapsed: new Set<string>(),
+    collapseLevel: "turn",
     refreshing: false,
     lastRefreshAt: 0,
     // 默认开启自动刷新：用户把 pi 跑在另一个终端，回来就能看到新会话。
@@ -156,7 +170,55 @@ export function applyFilter(state: AppState): void {
   });
 }
 
-/** 从当前分析结果生成时间轴行。 */
+/** 折叠键：段 / loop / 迭代 各自唯一。 */
+export function segKey(segmentIndex: number): string {
+  return `s${segmentIndex}`;
+}
+export function loopKey(segmentIndex: number, loopIndex: number): string {
+  return `s${segmentIndex}l${loopIndex}`;
+}
+export function turnKey(segmentIndex: number, loopIndex: number, turnIndex: number): string {
+  return `s${segmentIndex}l${loopIndex}t${turnIndex}`;
+}
+
+/** 某一行的折叠键（note 行没有）。 */
+export function rowKey(row: TimelineRow): string | null {
+  if (row.kind === "segment") return segKey(row.segmentIndex);
+  if (row.kind === "loop") return loopKey(row.segmentIndex, row.loopIndex ?? 0);
+  if (row.kind === "turn") return turnKey(row.segmentIndex, row.loopIndex ?? 0, row.turnIndex);
+  return null; // step 不可折叠
+}
+
+/**
+ * 该行是否处于「已折叠」状态（即它的子行应当被隐藏）。
+ *
+ * 注意判定的不是「这一行被标折叠了」，而是「它自己或任一祖先被折叠」——
+ * 这样折叠一个段，它内部所有 loop/turn 都会消失。
+ */
+export function isRowHidden(row: TimelineRow, collapsed: Set<string>): boolean {
+  if (collapsed.size === 0) return false;
+  const s = segKey(row.segmentIndex);
+  if (collapsed.has(s)) return row.kind !== "segment";
+  if (row.kind === "segment") return false;
+  const l = loopKey(row.segmentIndex, row.loopIndex ?? 0);
+  if (collapsed.has(l)) return row.kind !== "loop";
+  if (row.kind === "loop") return false;
+  const t = turnKey(row.segmentIndex, row.loopIndex ?? 0, row.turnIndex);
+  if (collapsed.has(t)) return row.kind !== "turn";
+  return false;
+}
+
+/**
+ * 统计某个折叠节点下面藏了多少行（不含节点自身）。
+ *
+ * 界面上显示的 `⋯N` 就是它 —— 之前这里多减了 1，
+ * 导致「折叠后显示 ⋯100，实际藏了 101 行」这种对不上的情况。
+ */
+export function countHidden(all: TimelineRow[], key: string): number {
+  return all.filter((r) => isRowHidden(r, new Set([key]))).length;
+}
+
+/** 生成完整行树（未折叠）；渲染时再按 collapsed 过滤。 */
 export function buildTimelineRows(analysis: SessionAnalysis): TimelineRow[] {
   const rows: TimelineRow[] = [];
   for (const seg of analysis.segments) {
@@ -166,23 +228,43 @@ export function buildTimelineRows(analysis: SessionAnalysis): TimelineRow[] {
       turnIndex: seg.turns[0]?.index ?? 0,
       depth: 0,
     });
-    for (const turn of seg.turns) {
+    // 第三层：agent loop（一个用户请求内的完整循环体）
+    for (const loop of seg.loops ?? []) {
       rows.push({
-        kind: "turn",
+        kind: "loop",
         segmentIndex: seg.index,
-        turnIndex: turn.index,
+        turnIndex: loop.turns[0]?.index ?? 0,
+        loopIndex: loop.index,
         depth: 1,
       });
-      for (const step of turn.steps) {
+      // 第四层：迭代（每次模型往返）
+      for (const turn of loop.turns) {
         rows.push({
-          kind: "step",
+          kind: "turn",
           segmentIndex: seg.index,
           turnIndex: turn.index,
-          stepKey: step.key,
+          loopIndex: loop.index,
           depth: 2,
         });
+        // 第五层：step
+        for (const step of turn.steps) {
+          rows.push({
+            kind: "step",
+            segmentIndex: seg.index,
+            turnIndex: turn.index,
+            stepKey: step.key,
+            loopIndex: loop.index,
+            depth: 3,
+          });
+        }
       }
     }
   }
   return rows;
+}
+
+/** 按折叠状态过滤出可见行。 */
+export function visibleRows(all: TimelineRow[], collapsed: Set<string>): TimelineRow[] {
+  if (collapsed.size === 0) return all;
+  return all.filter((r) => !isRowHidden(r, collapsed));
 }

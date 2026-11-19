@@ -35,6 +35,8 @@ step "布局宽度（多尺寸）" node --test tests/layout.test.ts
 step "theme / glyph 键名" node --test tests/theme.test.ts
 step "流程图与联动高亮" node --test tests/flow.test.ts
 step "压缩还原与漏词检测" node --test tests/compaction.test.ts
+step "AgentLoop 归组" node --test tests/loops.test.ts
+step "折叠行为" node --test tests/fold.test.ts
 
 echo
 echo "== CLI 冒烟 =="

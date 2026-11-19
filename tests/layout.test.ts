@@ -13,7 +13,14 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { buildTimelineRows, initialState, applyFilter } from "../src/ui/state.ts";
+import {
+  applyFilter,
+  buildTimelineRows,
+  initialState,
+  loopKey,
+  segKey,
+  turnKey,
+} from "../src/ui/state.ts";
 import { renderList } from "../src/ui/view-list.ts";
 import { renderTimeline } from "../src/ui/view-timeline.ts";
 import { renderIssues } from "../src/ui/view-issues.ts";
@@ -158,6 +165,45 @@ test("压缩对比视图：多尺寸 × 三种视角每行宽度精确", { skip:
       cmp.mode = mode;
       const lines = renderCompactionCompare(st, cmp, items[0]!.step.compaction!, "test");
       assertRect(lines, w, h, `compaction ${mode} ${w}x${h}`);
+    }
+  }
+});
+
+test("时间轴折叠状态：多尺寸下每行宽度精确", { skip: !sample }, async () => {
+  const st = initialState();
+  st.analysis = await analyzeSessionFile(sample!);
+  st.timelineRows = buildTimelineRows(st.analysis);
+
+  // 三种折叠状态：全折叠到段 / 折叠 loop / 折叠迭代
+  const segKeys = st.timelineRows.filter((r) => r.kind === "segment").map((r) => segKey(r.segmentIndex));
+  const loopRow = st.timelineRows.find((r) => r.kind === "loop");
+  const turnRow = st.timelineRows.find((r) => r.kind === "turn");
+
+  const states: [string, Set<string>][] = [
+    ["全部折叠到段", new Set(segKeys)],
+    [
+      "折叠单个 loop",
+      new Set(loopRow ? [loopKey(loopRow.segmentIndex, loopRow.loopIndex ?? 0)] : []),
+    ],
+    [
+      "折叠单个迭代",
+      new Set(turnRow ? [turnKey(turnRow.segmentIndex, turnRow.loopIndex ?? 0, turnRow.turnIndex)] : []),
+    ],
+  ];
+
+  for (const [label, collapsed] of states) {
+    for (const [w, h] of [
+      [80, 24],
+      [120, 30],
+      [160, 40],
+    ] as const) {
+      st.width = w;
+      st.height = h;
+      st.collapsed = new Set(collapsed);
+      st.timelineCursor = 0;
+      st.detailOffset = 0;
+      const lines = renderTimeline(st);
+      assertRect(lines, w, h, `fold(${label}) ${w}x${h}`);
     }
   }
 });

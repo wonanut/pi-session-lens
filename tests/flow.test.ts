@@ -57,8 +57,8 @@ test("流程图：选中 turn 时高亮 turn 节点", { skip: !sample }, async (
   const turn = seg.turns[0]!;
   const d = buildFlowDiagram(seg, { turnIndex: turn.index, hasStep: false }, 90);
   assert.ok(d.lines.length > 0, "应产出流程图");
-  assert.ok(d.active.includes("turn"), `应高亮 turn，实际 ${JSON.stringify(d.active)}`);
-  assert.equal(d.primary, "turn");
+  assert.ok(d.active.includes("iter"), `应高亮 iter（迭代），实际 ${JSON.stringify(d.active)}`);
+  assert.equal(d.primary, "iter");
 });
 
 test("流程图：选中 thinking 时高亮思考节点", { skip: !sample }, async () => {

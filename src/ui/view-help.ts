@@ -38,25 +38,25 @@ export function renderHelp(state: AppState): string[] {
   blank();
 
   h("两层循环");
-  quiet(
-    "pi 把每条消息都写成 jsonl 的一行，但真实运行是两层嵌套的：",
-  );
+  quiet("pi 把每条消息都写成 jsonl 的一行，但真实运行是嵌套的：");
   blank();
   body.push(
-    "  " + theme.compaction(glyph.compaction + " SessionLoop") + theme.faint("  一段用户请求的生命周期"),
+    "  " + theme.compaction(glyph.dot + " SessionLoop") + theme.faint("  一次用户请求"),
   );
-  body.push(theme.faint("  │"));
-  body.push(
-    "  " + theme.border(glyph.tee + glyph.hline + " ") + theme.accent("AgentLoop") + theme.faint("  模型 ↔ 工具的一次往复（一个 turn）"),
-  );
-  body.push(theme.faint("  │"));
-  body.push(
-    "  " + theme.border(glyph.corner + glyph.hline + " ") + theme.muted("step") + theme.faint("  思考 / 工具调用 / 工具结果 / 输出"),
+  body.push(theme.faint("  └─ ") + theme.accent("AgentLoop") + theme.faint("  一个循环体：思考↔工具反复迭代"));
+  body.push(theme.faint("     ├─ ") + theme.muted("迭代 1") + theme.faint("  ①构建请求 ②思考 ③调工具 ④执行 ⑤判定「继续」"));
+  body.push(theme.faint("     ├─ ") + theme.muted("迭代 2") + theme.faint("  …同上，回到 ① 是因为工具结果要再交给模型"));
+  body.push(theme.faint("     └─ ") + theme.muted("迭代 N") + theme.faint("  ⑤判定「收敛」→ 循环结束"));
+  blank();
+  p(
+    "⚠ 迭代不是独立循环。一次用户请求里模型会绕很多圈（实测 27 次往返），" +
+      "这些属于同一个 AgentLoop。把每圈当成并列循环，流程图上就每个都从" +
+      "「构建请求」重开，看着像跳过了构建请求。",
   );
   blank();
   quiet(
-    "SessionLoop 以「用户发一条消息」为界；compaction（上下文压缩）也是硬边界 —— " +
-      "压缩后模型只看到摘要，更早的原文不再进入上下文，所以「模型忘了之前的要求」这类问题必须在这里查。",
+    "compaction（上下文压缩）是硬边界：压缩后模型只看到摘要，更早的原文" +
+      "不再进入上下文。所以「模型忘了之前的要求」必须在 SessionLoop 层查。",
   );
   blank();
 

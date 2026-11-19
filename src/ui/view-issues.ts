@@ -213,15 +213,18 @@ function adviceFor(iss: Issue): string {
 }
 
 function footer(state: AppState): string {
+  const tail = state.flash ? theme.warn("  " + state.flash) : "";
   const keys: [string, string][] = [
     ["↑↓", "选择"],
     ["↵", "跳转"],
     ["esc", "返回时间轴"],
     ["q", "退出"],
   ];
-  const parts = keys.map(([k, d]) => theme.accent(k) + theme.faint(" " + d));
-  const tail = state.flash ? theme.warn("  " + state.flash) : "";
-  const line = parts.join(theme.faint(" · ")) + tail;
-  const w = visibleWidth(line);
-  return line + (w < state.width ? " ".repeat(state.width - w) : "");
+  const hint = keys.map(([k, d]) => theme.accent(k) + theme.faint(" " + d)).join(theme.faint(" · "));
+  // 与时间轴底栏一致：flash 优先，提示让位
+  const tailW = tail ? visibleWidth(tail) : 0;
+  const room = Math.max(0, state.width - tailW);
+  const hintClipped = visibleWidth(hint) > room ? truncate(hint, room, "…") : hint;
+  const line = hintClipped + tail;
+  return padEnd(truncate(line, state.width, ""), state.width);
 }

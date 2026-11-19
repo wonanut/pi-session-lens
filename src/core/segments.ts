@@ -11,6 +11,7 @@
  * 因为它不隶属于任何一条用户请求，但会改变后续所有请求的上下文。
  */
 import type { Segment, Turn } from "./model.ts";
+import { buildAgentLoops } from "./loops.ts";
 import type { SegmentPrompt } from "./prompts.ts";
 import type { Usage } from "./types.ts";
 import { splitUserText } from "./parser.ts";
@@ -164,6 +165,7 @@ export function buildSegmentsDetailed(
       endAt: last?.endAt ?? b.startAt,
       offsetMs: b.offsetMs,
       turns: turnList,
+      loops: [],
       usage,
       afterCompaction: b.afterCompaction,
       peakContextTokens: peak,
@@ -184,6 +186,12 @@ export function buildSegmentsDetailed(
       for (const st of t.steps) st.offsetMs = st.offsetMs - base;
     }
   }
+  // 段与 turn 的 offset 归一化完成后再切 agent loop，
+  // 这样 loop 内部的迭代序号与时间轴顺序一致
+  for (const seg of segs) {
+    seg.loops = buildAgentLoops(seg.turns, seg.index, seg.prompt);
+  }
+
   return { segments: segs, promptByTurn: promptTurnIndex };
 }
 

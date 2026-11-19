@@ -150,7 +150,6 @@ export interface Turn {
 // ---------------------------------------------------------------------------
 // Segment：SessionLoop 的一轮
 // ---------------------------------------------------------------------------
-
 export interface Segment {
   index: number;
   /** 用户这轮的原话（或压缩后重新开始时的第一句）。 */
@@ -160,7 +159,21 @@ export interface Segment {
   startAt: string;
   endAt: string;
   offsetMs: number;
+  /** 本段内所有模型往返（循环的一次迭代 = 一个 turn）。 */
   turns: Turn[];
+  /**
+   * 本段内的 agent loop 列表。
+   *
+   * 为什么单独一层：一个用户请求内部，模型会「思考 → 调工具 → 拿结果 →
+   * 再思考」迭代很多次（实测单个请求内有 27 次模型往返）。这些迭代共同
+   * 属于**同一个** agent loop —— 共享同一份用户意图、同一段上下文。
+   * 把每次往返当成并列的 turn 会让流程图上每个 turn 都从「构建请求」
+   * 开始，看起来像跳过了构建请求，实际是切分维度错了。
+   *
+   * 正常情况下一个段只有一个 loop；用户中途用 ask_user 打断后继续、
+   * 或压缩后续跑，才可能出现多个。
+   */
+  loops: AgentLoop[];
   /** 本轮的总 usage。 */
   usage: Usage;
   /** 本轮起始时是否由 compaction 开启。 */
@@ -173,6 +186,34 @@ export interface Segment {
   errorCount: number;
   /** 用户在轮中通过 ask 回答的次数。 */
   askCount: number;
+}
+
+/**
+ * 一个 agent loop：从处理某条用户意图开始，到模型不再需要工具为止。
+ *
+ * 内部按迭代（iteration）循环：每次迭代 = 一次模型往返
+ * （构建请求 → 思考 → 决定工具 → 执行 → 出口判定）。
+ * 判定为「还需工具」就进入下一轮迭代；判定为「收敛」则 loop 结束。
+ */
+export interface AgentLoop {
+  /** 在段内的序号（0 起）。 */
+  index: number;
+  segmentIndex: number;
+  /** 这个 loop 处理的是哪条用户意图。 */
+  prompt: string;
+  startAt: string;
+  endAt: string;
+  offsetMs: number;
+  /** 内部迭代（每次 = 一次模型往返）。 */
+  turns: Turn[];
+  /** 迭代次数。 */
+  iterationCount: number;
+  /** 是否正常收敛（最后一轮没有工具调用 / 给出文本）。 */
+  converged: boolean;
+  /** 结束原因。 */
+  endReason: "converge" | "length" | "aborted" | "error" | "open";
+  toolCallCount: number;
+  errorCount: number;
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,11 @@ import {
   currentFlash,
   flash,
   initialState,
+  loopKey,
+  rowKey,
+  segKey,
+  turnKey,
+  visibleRows,
 } from "./state.ts";
 import { renderList } from "./view-list.ts";
 import { renderTimeline } from "./view-timeline.ts";
@@ -615,6 +620,15 @@ export class App {
     if (name === "left") {
       return this.goUp();
     }
+    // 折叠：Z 全部折叠 / E 全部展开 / z 按粒度折叠（段/循环/迭代循环切换）
+    if (ch === "Z") return this.collapseAll("all");
+    if (ch === "E") return this.collapseAll("none");
+    if (ch === "z") {
+      const order = ["turn", "loop", "segment"] as const;
+      const i = order.indexOf(s.collapseLevel);
+      s.collapseLevel = order[(i + 1) % order.length]!;
+      return this.collapseAll("level");
+    }
     if (name === "enter") {
       s.view = "issue";
       return true;
@@ -628,12 +642,21 @@ export class App {
     return false;
   }
 
-  /** 时间轴：进入更细的层级（段→turn→step）。 */
+  /** 时间轴：进入更细的层级（段→loop→turn→step）。 */
   private drillDown(): boolean {
     const s = this.state;
-    const rows = s.timelineRows;
+    const rows = visibleRows(s.timelineRows, s.collapsed);
     const cur = rows[s.timelineCursor];
     if (!cur) return false;
+
+    // 折叠状态下的 → 优先展开当前节点，而不是往下跳
+    const key = rowKey(cur);
+    if (key && s.collapsed.has(key)) {
+      s.collapsed.delete(key);
+      flash(s, "已展开");
+      return true;
+    }
+
     // 找下一个更深的行
     for (let i = s.timelineCursor + 1; i < rows.length; i++) {
       const r = rows[i];
@@ -648,12 +671,22 @@ export class App {
     return false;
   }
 
-  /** 时间轴：回到上一层。 */
+  /** 时间轴：回到上一层（折叠状态下的 ← 优先折叠当前节点）。 */
   private goUp(): boolean {
     const s = this.state;
-    const rows = s.timelineRows;
+    const rows = visibleRows(s.timelineRows, s.collapsed);
     const cur = rows[s.timelineCursor];
-    if (!cur || cur.depth === 0) return false;
+    if (!cur) return false;
+
+    // 当前节点有子节点且未折叠 → ← 折叠它（与树形浏览器的习惯一致）
+    const key = rowKey(cur);
+    if (key && !s.collapsed.has(key) && this.hasChildren(cur)) {
+      s.collapsed.add(key);
+      flash(s, "已折叠");
+      return true;
+    }
+
+    if (cur.depth === 0) return false;
     for (let i = s.timelineCursor - 1; i >= 0; i--) {
       const r = rows[i];
       if (!r) continue;
@@ -664,6 +697,66 @@ export class App {
       }
     }
     return false;
+  }
+
+  /** 该行在完整行树里是否有子行。 */
+  private hasChildren(row: TimelineRow): boolean {
+    const all = this.state.timelineRows;
+    const idx = all.findIndex(
+      (r) =>
+        r.kind === row.kind &&
+        r.segmentIndex === row.segmentIndex &&
+        r.turnIndex === row.turnIndex &&
+        r.loopIndex === row.loopIndex &&
+        r.stepKey === row.stepKey,
+    );
+    if (idx < 0) return false;
+    const next = all[idx + 1];
+    return Boolean(next && next.depth > row.depth);
+  }
+
+  /**
+   * 折叠/展开的批量操作。
+   *
+   * @param mode "all" 全部折叠到顶层 / "none" 全部展开 /
+   *             "level" 按当前粒度折叠（段 / loop / 迭代）
+   */
+  private collapseAll(mode: "all" | "none" | "level"): boolean {
+    const s = this.state;
+    const all = s.timelineRows;
+    if (all.length === 0) return false;
+
+    if (mode === "none") {
+      s.collapsed.clear();
+      flash(s, "已全部展开");
+    } else if (mode === "all") {
+      // 只折叠到顶层：段保持可见，段内全折叠
+      s.collapsed.clear();
+      for (const r of all) {
+        if (r.kind === "segment") s.collapsed.add(segKey(r.segmentIndex));
+      }
+      flash(s, "已折叠到段（只剩 SEG 行）");
+    } else {
+      // 按当前粒度：保持「每一层都折叠」，便于总览
+      s.collapsed.clear();
+      const level = s.collapseLevel;
+      for (const r of all) {
+        if (level === "segment" && r.kind === "segment") s.collapsed.add(segKey(r.segmentIndex));
+        if (level === "loop" && r.kind === "loop") {
+          s.collapsed.add(loopKey(r.segmentIndex, r.loopIndex ?? 0));
+        }
+        if (level === "turn" && r.kind === "turn") {
+          s.collapsed.add(turnKey(r.segmentIndex, r.loopIndex ?? 0, r.turnIndex));
+        }
+      }
+      flash(s, `已按${level === "segment" ? "段" : level === "loop" ? "循环" : "迭代"}折叠`);
+    }
+
+    // 折叠后光标可能越界，收敛到可见范围
+    const vis = visibleRows(s.timelineRows, s.collapsed);
+    s.timelineCursor = Math.min(s.timelineCursor, Math.max(0, vis.length - 1));
+    s.detailOffset = 0;
+    return true;
   }
 
   /** 跳到下一个/上一个有 issue 的 step。 */
@@ -728,10 +821,32 @@ export class App {
     return false;
   }
 
-  /** 按 issue 的定位信息把时间轴光标移过去。 */
+  /**
+   * 展开某条 turn 的所有祖先。
+   *
+   * 跳转前必须做这一步：如果目标藏在折叠节点里，它在可见行里不存在，
+   * 光标会落空 —— 表现为「按了回车但什么都没发生」，很难排查。
+   */
+  private expandAncestorsOf(segmentIndex: number, turnIndex: number): void {
+    const s = this.state;
+    if (s.collapsed.size === 0) return;
+    s.collapsed.delete(segKey(segmentIndex));
+    // 找到这个 turn 属于哪个 loop
+    const seg = s.analysis?.segments[segmentIndex];
+    if (!seg) return;
+    for (const loop of seg.loops ?? []) {
+      if (!loop.turns.some((t) => t.index === turnIndex)) continue;
+      s.collapsed.delete(loopKey(segmentIndex, loop.index));
+      s.collapsed.delete(turnKey(segmentIndex, loop.index, turnIndex));
+      break;
+    }
+  }
+
   private jumpToIssueLocation(stepKey: string | undefined, turnIndex: number, segmentIndex: number): void {
     const s = this.state;
-    const rows = s.timelineRows;
+    // 关键：跳转前先展开目标所在的所有祖先，否则行是隐藏的，光标会落空
+    this.expandAncestorsOf(segmentIndex, turnIndex);
+    const rows = visibleRows(s.timelineRows, s.collapsed);
     let target = -1;
     if (stepKey) {
       target = rows.findIndex((r) => r.stepKey === stepKey);

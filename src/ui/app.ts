@@ -10,6 +10,8 @@
  * 定位问题的动作是「下钻」——从会话 → 段 → 轮 → 步。
  * 逐层返回让用户始终知道自己站在哪一层，也不会丢失上一层的选中位置。
  */
+import { statSync } from "node:fs";
+
 import type { AppState, View } from "./state.ts";
 import {
   applyFilter,
@@ -66,6 +68,7 @@ export class App {
   private pendingEsc = false;
   private autoTimer: NodeJS.Timeout | null = null;
   private lastAutoRefresh = 0;
+  private lastSessionReload = 0;
 
   constructor(opts: RunOptions) {
     this.opts = opts;
@@ -124,6 +127,74 @@ export class App {
     }
   }
 
+  /**
+   * 重新解析「当前已打开的会话」，保留用户当前的位置。
+   *
+   * 为什么单独一个函数而不是复用 openSession：
+   *   1. openSession 开头有短路（已打开就直接返回），刷新会被它挡掉
+   *   2. openSession 会把光标重置到 0，刷新时用户会丢失当前位置
+   *
+   * 会话在别的终端继续跑时，文件会增长 —— 这里重新读一遍就能看到新内容。
+   * 用 mtime 判断是否真的变了，避免无谓的重绘和「已是最新」的误报。
+   */
+  async reloadCurrentSession(notify = false): Promise<void> {
+    const s = this.state;
+    const path = s.currentPath;
+    if (!path) return;
+
+    s.loading = true;
+    this.requestRender();
+
+    try {
+      // 记住当前位置，刷新后尽量停留原处
+      const prevCursor = s.timelineCursor;
+      const prevVisible = visibleRows(s.timelineRows, s.collapsed);
+      const prevRow = prevVisible[prevCursor];
+      const prevCollapsed = new Set(s.collapsed);
+
+      const before = s.analysis;
+      const analysis = await analyzeSessionFile(path);
+      const beforeCount = before ? countSteps(before) : 0;
+      const afterCount = countSteps(analysis);
+      const grew = afterCount - beforeCount;
+
+      s.analysis = analysis;
+      s.timelineRows = buildTimelineRows(analysis);
+      s.collapsed = prevCollapsed;
+
+      // 恢复光标：按「原来那行是哪一行」重新定位，而不是死守索引
+      // （新内容插在前面时索引会漂移）
+      if (prevRow) {
+        const vis = visibleRows(s.timelineRows, s.collapsed);
+        const idx = vis.findIndex(
+          (r) =>
+            r.kind === prevRow.kind &&
+            r.segmentIndex === prevRow.segmentIndex &&
+            r.turnIndex === prevRow.turnIndex &&
+            r.loopIndex === prevRow.loopIndex &&
+            r.stepKey === prevRow.stepKey,
+        );
+        s.timelineCursor = idx >= 0 ? idx : Math.min(prevCursor, Math.max(0, vis.length - 1));
+      } else {
+        s.timelineCursor = 0;
+      }
+
+      if (notify) {
+        flash(
+          s,
+          grew > 0 ? `已刷新 · 新增 ${grew} 步` : grew < 0 ? "已刷新 · 内容变化" : "已刷新 · 无新增",
+        );
+      }
+      s.lastSessionReloadAt = Date.now();
+      this.markSessionFresh();
+    } catch (err) {
+      if (notify) flash(s, `刷新失败: ${(err as Error).message.slice(0, 40)}`);
+    } finally {
+      s.loading = false;
+      this.requestRender();
+    }
+  }
+
   /** 打开一个会话并分析。 */
   async openSession(path: string): Promise<void> {
     if (this.state.currentPath === path && this.state.analysis) {
@@ -146,6 +217,7 @@ export class App {
       this.state.detailOffset = 0;
       this.state.issueCursor = 0;
       this.state.issueOffset = 0;
+      this.markSessionFresh();
     } catch (err) {
       this.state.loadError = (err as Error).message;
       this.state.analysis = null;
@@ -202,9 +274,12 @@ export class App {
   /**
    * 自动刷新定时器。
    *
-   * 只在列表页刷新：用户在时间轴里看某个会话时，突然刷新列表会把他的
-   * 上下文打乱；而且那时列表也不在屏幕上，刷了看不见。
-   * 切回列表页时由 handleEvent 立即补一次刷新，所以不会有「久未更新」的问题。
+   * 两种刷新，按当前视图选择：
+   *   - 列表页：重新扫描目录（发现新会话）
+   *   - 会话内：重新解析当前会话文件（看到别处继续跑产生的新内容）
+   *
+   * 会话内刷新用文件 mtime 做前置判断：文件没变就完全跳过，
+   * 这样 10 秒一次的轮询对正在读的长会话几乎没有开销。
    */
   private startAutoRefresh(): void {
     if (this.autoTimer) return;
@@ -214,15 +289,57 @@ export class App {
       const s = this.state;
       if (!this.running) return;
       if (s.autoRefreshMs <= 0) return;
-      if (s.view !== "list") return;
       if (s.loading || s.searching) return; // 正在加载/搜索时不打断
+
       const due = this.lastAutoRefresh + s.autoRefreshMs;
       if (Date.now() < due) return;
-      this.lastAutoRefresh = Date.now();
-      void this.loadSummaries(false);
+
+      if (s.view === "list") {
+        this.lastAutoRefresh = Date.now();
+        void this.loadSummaries(false);
+        return;
+      }
+
+      // 会话内：只在文件真的变了才重载
+      if (s.currentPath && this.sessionFileChanged()) {
+        this.lastAutoRefresh = Date.now();
+        this.lastSessionReload = Date.now();
+        void this.reloadCurrentSession(false);
+      }
     }, 2000);
     // 定时器不应阻止进程退出
     this.autoTimer.unref?.();
+  }
+
+  /**
+   * 当前会话文件是否比上次加载时更新了。
+   *
+   * 用 mtime+size 双判：只比 mtime 在某些文件系统上精度不够，
+   * 只比 size 又漏掉「内容被替换但大小不变」的情况。
+   */
+  private sessionFileChanged(): boolean {
+    const s = this.state;
+    if (!s.currentPath) return false;
+    try {
+      const st = statSync(s.currentPath);
+      if (s.sessionMtimeMs === 0) return false;
+      return st.mtimeMs !== s.sessionMtimeMs || st.size !== s.sessionSize;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 记录当前会话文件的 mtime/size，作为下次判断变化的基准。 */
+  private markSessionFresh(): void {
+    const s = this.state;
+    if (!s.currentPath) return;
+    try {
+      const st = statSync(s.currentPath);
+      s.sessionMtimeMs = st.mtimeMs;
+      s.sessionSize = st.size;
+    } catch {
+      /* 读不到就算了，下次刷新会重试 */
+    }
   }
 
   private stopAutoRefresh(): void {
@@ -361,9 +478,11 @@ export class App {
         void this.loadSummaries(true);
         return true;
       }
-      // 会话内：重新解析当前会话
-      if (s.view === "timeline" && s.currentPath) {
-        void this.openSession(s.currentPath).then(() => flash(s, "已重新加载"));
+      // 会话内：重新解析当前会话（看到别处继续跑产生的新内容）
+      if (s.view === "timeline" || s.view === "issue" || s.view === "compaction") {
+        this.lastSessionReload = Date.now();
+        void this.reloadCurrentSession(true);
+        return true;
       }
       return true;
     }
@@ -915,3 +1034,10 @@ export function renderSnapshot(state: AppState): string {
 
 /** 便于外部构造摘要列表（导出/CI 用）。 */
 export type { SessionSummary };
+
+/** 统计一个分析结果里的 step 总数（用于判断刷新后是否新增了内容）。 */
+function countSteps(a: { segments: { turns: { steps: unknown[] }[] }[] }): number {
+  let n = 0;
+  for (const seg of a.segments) for (const t of seg.turns) n += t.steps.length;
+  return n;
+}

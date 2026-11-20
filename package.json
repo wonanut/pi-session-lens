@@ -1,6 +1,6 @@
 {
   "name": "pi-session-lens",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "TUI 可视化分析 pi-agent 历史会话：两层循环（SessionLoop / AgentLoop）逐步回溯，快速定位问题",
   "type": "module",
   "bin": {

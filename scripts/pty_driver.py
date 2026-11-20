@@ -300,6 +300,11 @@ SCENARIOS = [
         "expect": ["已折叠"],
     },
     {
+        "name": "会话内 r 重新加载当前会话",
+        "steps": [("\r", 2.4, "open"), ("r", 1.5, "reload")],
+        "expect": ["已刷新"],
+    },
+    {
         "name": "a 键切换自动刷新开关",
         "steps": [("a", 0.6, "toggle-off"), ("a", 0.6, "toggle-on")],
         "expect": ["自动"],

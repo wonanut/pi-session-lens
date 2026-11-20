@@ -69,6 +69,16 @@ export interface AppState {
   refreshing: boolean;
   /** 上次刷新完成的时间戳，用于底栏显示「N 秒前」。 */
   lastRefreshAt: number;
+  /** 上次重新加载当前会话的时间戳（时间轴底栏用）。 */
+  lastSessionReloadAt: number;
+  /**
+   * 当前会话文件的 mtime 与 size。
+   *
+   * 用于判断「文件是否被外部改动」——会话在别的终端继续跑时文件会增长，
+   * 靠这两个值就能以极低成本发现变化，不必每次重解析整份 jsonl。
+   */
+  sessionMtimeMs: number;
+  sessionSize: number;
   /** 自动刷新开关与间隔（毫秒）。0 表示关闭。 */
   autoRefreshMs: number;
 
@@ -119,6 +129,9 @@ export function initialState(): AppState {
     collapseLevel: "turn",
     refreshing: false,
     lastRefreshAt: 0,
+    lastSessionReloadAt: 0,
+    sessionMtimeMs: 0,
+    sessionSize: 0,
     // 默认开启自动刷新：用户把 pi 跑在另一个终端，回来就能看到新会话。
     // 10 秒间隔对 1000+ 会话的增量扫描（走缓存）几乎无感。
     autoRefreshMs: 10_000,

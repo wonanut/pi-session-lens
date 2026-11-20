@@ -652,7 +652,13 @@ function healthBar(health: number): string {
 }
 
 function renderFooterLine(state: AppState): string {
-  const tail = state.flash ? theme.warn(state.flash) : "";
+  // 会话内也自动刷新（文件变了就重解析），把「多久前刷的」显示出来，
+  // 否则用户不知道界面上的数据是不是最新的。
+  const reloadTag =
+    state.lastSessionReloadAt > 0 && !state.flash
+      ? theme.faint(`${fmtAgo(state.lastSessionReloadAt)}同步`)
+      : "";
+  const tail = state.flash ? theme.warn(state.flash) : reloadTag;
   const keys: [string, string][] = [
     ["↑↓", "行"],
     ["→←", "层级/折叠"],
@@ -667,6 +673,7 @@ function renderFooterLine(state: AppState): string {
   // 按键提示是常驻参考，空间不够时可以让位（否则新加的折叠键
   // 会把 flash 挤出屏幕，表现为「按了键没反应」）。
   const hint = keys.map(([k, d]) => theme.accent(k) + theme.faint(" " + d)).join(theme.faint(" · "));
+  // tail 自身宽度 + 它与 hint 之间的 2 空格分隔，统一由这里算，别在字符串里预埋空格
   const tailW = tail ? visibleWidth(tail) + 2 : 0;
   const room = Math.max(0, state.width - tailW);
   const hintClipped = visibleWidth(hint) > room ? truncate(hint, room, "…") : hint;
